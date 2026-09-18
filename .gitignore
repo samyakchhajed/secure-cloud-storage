@@ -1,0 +1,32 @@
+# Python runtime & bytecode cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Terraform runtime, state & local overrides
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+.terraform.lock.hcl
+
+# Lambda packaging build artifacts
+terraform/modules/compute/build/
+*.zip
+
+# Local environment & secret files
+.env
+.env.*
+*.pem
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
