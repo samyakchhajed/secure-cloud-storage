@@ -5,6 +5,7 @@ Zero boto3 or AWS SDK imports in handler.
 
 import json
 import base64
+import traceback
 from typing import Any
 
 from common.response import success, created, bad_request, unauthorized, not_found, server_error
@@ -29,6 +30,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
         return not_found(f'No auth route matches {method} {raw_path}')
 
     except Exception as exc:
+        traceback.print_exc()
         err_str = str(exc)
         if 'UsernameExistsException' in err_str:
             return bad_request('An account with this email already exists.')

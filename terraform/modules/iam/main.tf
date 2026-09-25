@@ -113,18 +113,29 @@ resource "aws_iam_policy" "lambda_cognito_policy" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "CognitoAdminActions"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminGetUser",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminInitiateAuth",
+          "cognito-idp:AdminRespondToAuthChallenge"
+        ]
+        Resource = [
+          var.cognito_user_pool_arn
+        ]
+      },
+      {
+        Sid    = "CognitoClientAuthActions"
         Effect = "Allow"
         Action = [
           "cognito-idp:SignUp",
           "cognito-idp:ConfirmSignUp",
           "cognito-idp:InitiateAuth",
-          "cognito-idp:AdminGetUser",
-          "cognito-idp:AdminCreateUser",
-          "cognito-idp:AdminSetUserPassword"
+          "cognito-idp:RespondToAuthChallenge"
         ]
-        Resource = [
-          var.cognito_user_pool_arn
-        ]
+        Resource = "*"
       }
     ]
   })
