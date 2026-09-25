@@ -83,8 +83,12 @@ jobs:
           echo "Syncing frontend static assets to s3://${SITE_BUCKET}..."
           aws s3 sync frontend/ s3://${SITE_BUCKET} --delete
 
-          echo "Creating CloudFront CDN cache invalidation..."
-          aws cloudfront create-invalidation --distribution-id ${CF_DIST_ID} --paths "/*"
+          if [ -n "${CF_DIST_ID}" ]; then
+            echo "Creating CloudFront CDN cache invalidation..."
+            aws cloudfront create-invalidation --distribution-id ${CF_DIST_ID} --paths "/*"
+          else
+            echo "Skipping CloudFront cache invalidation (Direct S3 Static Website Hosting active)."
+          fi
 
           echo "### 🚀 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

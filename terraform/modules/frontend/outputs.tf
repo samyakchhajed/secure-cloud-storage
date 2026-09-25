@@ -4,11 +4,11 @@ output "frontend_bucket_name" {
 }
 
 output "cloudfront_distribution_id" {
-  value       = aws_cloudfront_distribution.frontend_cdn.id
-  description = "ID of the CloudFront distribution"
+  value       = ""
+  description = "ID of the CloudFront distribution (empty for direct S3 website hosting)"
 }
 
 output "website_url" {
-  value       = "https://${aws_cloudfront_distribution.frontend_cdn.domain_name}"
-  description = "CloudFront URL of the deployed web application"
+  value       = "http://${aws_s3_bucket_website_configuration.frontend_website.website_endpoint}"
+  description = "Public URL of the S3 static web application"
 }
