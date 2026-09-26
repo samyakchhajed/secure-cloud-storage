@@ -1,82 +1,121 @@
 # Secure Cloud File Storage
 
-A serverless, cloud-native file storage and sharing platform on AWS engineered with a strict focus on **secure multi-user access control**, least-privilege IAM, S3 server-side encryption, and time-limited presigned transfers.
+A serverless, cloud-native file storage, management, and sharing platform built on Amazon Web Services (AWS). Engineered with a strict focus on **least-privilege IAM security**, **zero client-side cloud SDK bloat**, **server-side AES-256 encryption**, and **time-limited direct S3 presigned transfers**.
+
+> **Note on Project Status:** This project was developed as a real-world **infrastructure trial and cloud-hardening ground** to uncover and solve deep AWS edge cases (OIDC claims, IAM permissions, and ephemeral CI/CD state). The complete 22-run diagnostic journey is documented in [DEVELOPMENT_AND_DEPLOYMENT.md](file:///DEVELOPMENT_AND_DEPLOYMENT.md), and its finalized production-grade architectural patterns are carried forward directly into the **[ML Model & Deployment Comparison]** platform. Note that the sign-in flow's data-plane permission fix (identified in Run 22) was deliberately left unapplied here — this project was frozen at the discovery boundary — and is correctly implemented from Day 1 in the ML platform instead.
 
 ---
 
-## Overview
-
-Cloud file management systems must provide seamless usability while strictly preventing unauthorized access and data leaks. This project demonstrates a production-ready, multi-user storage platform where:
-
-1. **Every file request is authorized** by serverless compute before access is granted.
-2. **Heavy file I/O is offloaded directly to Amazon S3** via short-lived presigned URLs (300-second TTL), bypassing backend compute bottlenecks.
-3. **The S3 storage is completely private** with all 4 Block Public Access settings enabled, TLS-only bucket policies, and default SSE-S3 AES-256 encryption.
-4. **The frontend uses zero AWS SDKs** — built with zero-build Vanilla HTML5, modern CSS, and ES Modules JS for instant loading and complete portability.
-5. **The backend follows Hexagonal Architecture** — pure Python business handlers isolated from cloud SDK adapters.
-
----
-
-## How It Works
+## Architecture Overview
 
 ```text
-AUTHENTICATION
-Browser → Cognito → JWT
+AUTHENTICATION & IDENTITY:
+  User Browser ──► Amazon Cognito User Pool ──► Returns JWT (ID + Access Tokens)
 
-API / AUTHORIZATION
-Browser → API Gateway → Lambda → DynamoDB
-                              │
-                              └── Authorize operation
-                                      │
-                                      ▼
-                                Presigned S3 URL
+CONTROL-PLANE (AUTHORIZATION & METADATA):
+  User Browser ──► Amazon API Gateway HTTP API v2 (Cognito JWT Authorizer)
+                         │
+                         ▼
+                   AWS Lambda Functions (Python 3.12)
+                         │
+                         ├──► Amazon DynamoDB (Single-Table Metadata & ACLs)
+                         │
+                         └──► Returns 5-Minute Presigned S3 URL
 
-FILE TRANSFER
-Browser ─── Presigned PUT / GET ──► S3
+DATA-PLANE (DIRECT BINARY TRANSFER):
+  User Browser ══════ Direct PUT (Upload) / GET (Download) ══════► Amazon S3 Private Storage
+                                                                     (SSE-S3 AES-256 / BPA)
 ```
 
-The application separates authorization and data transfer into two clean phases:
-
-1. **Authentication & Authorization:** The user logs in via Amazon Cognito to obtain a JWT token. Every subsequent API request carries this token to API Gateway, where Lambda verifies ownership or sharing permissions in DynamoDB.
-2. **Direct-to-S3 Data Transfer:** Once authorized, Lambda returns a 5-minute presigned S3 URL (`PUT` for upload with `AES256` encryption, `GET` for download). The browser transfers binary bytes directly to/from S3, eliminating API Gateway payload limits and compute overhead.
-
----
-
-## Key Features
-
-### 1. Secure Authentication & User Identity
-- Email and password registration with automated email verification codes via **Amazon Cognito User Pool**.
-- Authenticated sessions issue standard JWT tokens passed in standard `Authorization: Bearer <token>` HTTP headers.
-
-### 2. Direct S3 Presigned Transfers
-- **Upload:** Frontend requests a presigned `PUT` URL -> Lambda verifies available user quota -> Frontend uploads directly to S3 with mandatory `AES256` encryption.
-- **Download:** Frontend requests a presigned `GET` URL -> Lambda checks ownership or viewer share in DynamoDB -> Returns 5-minute presigned URL -> Frontend downloads directly from S3.
-
-### 3. Hierarchical Folder Organization
-- Organize files into nested subfolders with an interactive explorer, real-time search filtering, and dynamic breadcrumb navigation.
-
-### 4. Granular Multi-User File Sharing
-- Share individual files with other registered users by email with read-only (Viewer) access.
-- Dedicated **"Shared with Me"** view powered by a DynamoDB Global Secondary Index (`GSI1`).
-- File owners can review active shares and revoke access at any time.
-
-### 5. Live Storage Quota Tracking
-- Real-time tracking of account storage usage and file count against a configurable quota, displayed with a visual progress meter.
+The system strictly decouples authorization and heavy binary transfer into two clean phases:
+1. **Control-Plane Authorization:** Client requests an action using its Cognito JWT token. API Gateway validates the token signature, and backend Lambda functions verify ownership and permission in DynamoDB.
+2. **Data-Plane Direct Transfer:** Once authorized, Lambda returns a short-lived (300-second) presigned S3 URL (`PUT` for upload enforcing `AES256` encryption, `GET` for download). The browser transfers binary bytes directly to/from S3, bypassing API Gateway payload limits (10 MB ceiling) and eliminating compute runtime overhead.
 
 ---
 
-## Architecture Summary
+## Core Capabilities & Engineering Highlights
 
-The platform is built on a *serverless, pay-per-use* architecture deployed in the Mumbai (`ap-south-1`) region (compute scales to zero when inactive, with minimal baseline storage and database cost):
-
-- **Frontend:** Zero-build single-page application (vanilla HTML5, modern CSS, ES Modules) hosted securely via *Amazon S3* and distributed globally via *Amazon CloudFront* with Origin Access Control (OAC).
-- **API Surface:** *Amazon API Gateway HTTP API (v2)* with built-in CORS, Cognito JWT Authorizer, and payload format 2.0 integrations.
-- **Compute Layer:** *AWS Lambda (Python 3.12)* built with a hexagonal architecture isolating pure business logic handlers from cloud adapters.
-- **Data & Artifacts:** *Amazon DynamoDB* (single-table design with on-demand capacity) for metadata, folder hierarchies, and ACLs; *Amazon S3* (private SSE-S3 AES-256 encrypted) for user files.
-- **Identity & Auth:** *Amazon Cognito User Pool* managing authentication, password policies, and verification tokens.
-- **Security:** Keyless authentication via *GitHub Actions OpenID Connect (OIDC)* and strict least-privilege IAM policies.
+- **Zero Client-Side AWS SDKs:** Built with pure Vanilla HTML5, modern CSS custom properties, and JavaScript ES Modules. No `@aws-sdk`, Amplify, or Node.js dependencies in the client bundle.
+- **Hexagonal Architecture (Ports & Adapters):** Core business logic in backend Lambda handlers is written in pure Python with **zero `boto3` imports**. All AWS SDK communications are isolated exclusively in dedicated `adapters.py` files.
+- **Direct S3 Presigned Transfers:** Heavy binary file transfers bypass Lambda and API Gateway entirely, utilizing 5-minute presigned URLs with mandatory `x-amz-server-side-encryption: AES256`.
+- **Hierarchical Folder Structure:** Dynamic folder creation, nested navigation, path resolution, and dynamic breadcrumbs.
+- **Multi-User Sharing & Granular ACLs:** Share files with other registered users by email with read-only (Viewer) permissions, backed by a dedicated **"Shared with Me"** view powered by a DynamoDB Global Secondary Index (`GSI1`).
+- **Real-Time Quota Management:** Live tracking of user storage consumption (bytes) and file count against a configurable quota, with real-time UI progress feedback.
+- **₹0 Serverless Cost Architecture:** Deployed in Mumbai (`ap-south-1`) utilizing S3 SSE-S3 default encryption (`AES256`), On-Demand DynamoDB (`PAY_PER_REQUEST`), and S3 Static Website Hosting.
+- **Keyless CI/CD Automation:** Automated cloud deployment via GitHub Actions OpenID Connect (OIDC), assuming AWS IAM roles without storing static access keys.
 
 ---
 
-## Screenshots
+## DynamoDB Single-Table Schema
 
-Visual walkthroughs and interface screenshots illustrating the file explorer, upload progress modal, folder creation, sharing dialog, and shared files dashboard are organized in the `screenshots/` directory.
+All metadata, folder hierarchies, sharing permissions, and quota tracking are stored in a single DynamoDB table (`scs-metadata-dev`):
+
+| Entity Type | Partition Key (`PK`) | Sort Key (`SK`) | `GSI1PK` | `GSI1SK` | Key Attributes |
+|---|---|---|---|---|---|
+| **User Profile / Quota** | `USER#<userId>` | `PROFILE` | — | — | `email`, `usedBytes`, `quotaBytes`, `fileCount`, `updatedAt` |
+| **Folder Item** | `USER#<userId>` | `FOLDER#<folderId>` | — | — | `folderId`, `name`, `parentFolderId`, `path`, `createdAt` |
+| **File Item** | `USER#<userId>` | `FILE#<fileId>` | — | — | `fileId`, `fileName`, `sizeBytes`, `contentType`, `folderId`, `s3Key`, `encryption`, `createdAt` |
+| **File Share ACL** | `FILE#<fileId>` | `SHARE#<recipientEmail>` | `RECIPIENT#<recipientEmail>` | `FILE#<fileId>` | `ownerId`, `ownerEmail`, `fileName`, `sizeBytes`, `permission`, `createdAt` |
+
+---
+
+## API Surface (HTTP API v2)
+
+| Method | Endpoint | Authorization | Description |
+|---|---|---|---|
+| `POST` | `/api/auth/register` | Public | Registers a new user in Cognito User Pool and triggers email OTP |
+| `POST` | `/api/auth/verify` | Public | Verifies the 6-digit confirmation code and activates the user account |
+| `POST` | `/api/auth/login` | Public | Authenticates credentials and returns Cognito JWT ID and Access tokens |
+| `POST` | `/api/files/upload-url` | Cognito JWT | Validates quota and generates a presigned S3 `PUT` upload URL |
+| `POST` | `/api/files/confirm` | Cognito JWT | Confirms completed S3 upload, saves metadata, and increments quota |
+| `GET` | `/api/files` | Cognito JWT | Lists files and subfolders in the current folder (`?folderId=...`) |
+| `GET` | `/api/files/{fileId}/download-url`| Cognito JWT | Validates ownership/share and returns a presigned S3 `GET` download URL |
+| `DELETE`| `/api/files/{fileId}` | Cognito JWT | Deletes S3 object, removes DynamoDB record, and reclaims quota |
+| `POST` | `/api/folders` | Cognito JWT | Creates a new folder under an optional parent folder |
+| `DELETE`| `/api/folders/{folderId}` | Cognito JWT | Deletes an empty folder |
+| `POST` | `/api/files/{fileId}/share` | Cognito JWT | Grants read-only Viewer access to another user by email |
+| `DELETE`| `/api/files/{fileId}/share/{email}`| Cognito JWT | Revokes Viewer access for a recipient |
+| `GET` | `/api/files/shared-with-me` | Cognito JWT | Queries `GSI1` for all files shared with the authenticated user |
+| `GET` | `/api/user/quota` | Cognito JWT | Returns current storage usage, quota limit, and percentage |
+
+---
+
+## Running Locally (Zero Build & Mock Simulation)
+
+The frontend contains a full offline in-memory simulation engine ([`frontend/src/api/mock.js`](file:///frontend/src/api/mock.js)) that intercepts requests when `window.API_BASE_URL` is empty, allowing complete offline development with zero cloud costs.
+
+```sh
+cd frontend
+python -m http.server 8080
+```
+Open **`http://localhost:8080`** in any browser.
+
+To connect to live AWS infrastructure, configure your API Gateway URL inside [`frontend/config.js`](file:///frontend/config.js):
+```javascript
+window.API_BASE_URL = 'https://<api-id>.execute-api.ap-south-1.amazonaws.com';
+```
+
+---
+
+## Deployment & Teardown via GitHub Actions
+
+### 1. Automated Deployment (`deploy.yaml`)
+Triggered via **`workflow_dispatch`** on GitHub Actions:
+- Requests an ephemeral OIDC JWT token from GitHub.
+- Assumes the CI/CD IAM Role (`sts:AssumeRoleWithWebIdentity`) via `aws-actions/configure-aws-credentials@v6`.
+- Initializes and executes `terraform apply` in `ap-south-1`.
+- Injects the live API Gateway invoke URL into `frontend/config.js`.
+- Syncs static frontend assets to the S3 hosting bucket.
+
+### 2. Automated Teardown (`destroy.yaml`)
+Triggered via **`workflow_dispatch`** with a safety gate:
+- Requires entering the confirmation string **`destroy`**.
+- Executes `terraform destroy` to completely remove all AWS resources, guaranteeing ₹0 lingering costs.
+
+---
+
+## Architectural Evolution
+
+The comprehensive 22-run deployment and diagnostic journey of this project is fully chronicled in [DEVELOPMENT_AND_DEPLOYMENT.md](file:///DEVELOPMENT_AND_DEPLOYMENT.md). 
+
+This project served as the **foundational trial and infrastructure hardening ground**, discovering and resolving deep edge cases across GitHub OIDC claim structures, ephemeral runner state lifecycles, and API Gateway data-plane permissions. These proven patterns are now established as the production architectural standard for the **ML Model & Deployment Comparison** platform.
