@@ -1028,6 +1028,65 @@ a:hover {
 }
 
 /* ==========================================================================
+   Global Drag & Drop Overlay (Google Drive style)
+   ========================================================================== */
+
+.global-drag-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(79, 70, 229, 0.12);
+  backdrop-filter: blur(4px);
+  border: 3px dashed var(--primary);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.global-drag-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.global-drag-card {
+  background: white;
+  padding: 36px 52px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border-subtle);
+  animation: slideUp 0.2s ease-out;
+}
+
+.global-drag-icon {
+  font-size: 52px;
+  animation: pulse 1.5s infinite;
+}
+
+.global-drag-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.global-drag-sub {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+/* ==========================================================================
    Animations
    ========================================================================== */
 
@@ -1044,6 +1103,152 @@ a:hover {
 @keyframes slideInRight {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+/* ==========================================================================
+   Zero-Knowledge Recovery Key & Security Styles
+   ========================================================================== */
+
+.auth-link-sm {
+  font-size: 13px;
+  color: var(--primary);
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.12s ease;
+}
+.auth-link-sm:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
+.recovery-modal-card {
+  max-width: 540px !important;
+}
+
+.recovery-key-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.recovery-key-display {
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.recovery-key-text {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-size: 19px;
+  font-weight: 700;
+  color: #38bdf8;
+  letter-spacing: 0.1em;
+  user-select: all;
+  text-align: center;
+  word-break: break-all;
+}
+
+.recovery-key-actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  justify-content: center;
+}
+
+.btn-recovery-action {
+  padding: 8px 14px;
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-sm);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+.btn-recovery-action:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.btn-recovery-action.copied {
+  background-color: #065f46;
+  border-color: #10b981;
+  color: #a7f3d0;
+}
+
+.security-warning-box {
+  background-color: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  color: #92400e;
+  line-height: 1.45;
+}
+
+.security-warning-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.recovery-confirm-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  background-color: var(--bg-hover);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  font-size: 13px;
+  color: var(--text-primary);
+  user-select: none;
+  cursor: pointer;
+}
+.recovery-confirm-group input[type="checkbox"] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.security-info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+.security-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background-color: #fafafa;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.security-info-label {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.security-info-val {
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--primary);
+  background-color: var(--primary-light);
+  padding: 2px 8px;
+  border-radius: 4px;
 }
 
 /* ==========================================================================

@@ -7,7 +7,7 @@ This document records every significant architectural, security, and engineering
 ## 1. Application & Frontend Architecture
 
 ### Decision: Zero AWS SDK in the Frontend Application
-- **Chosen:** The frontend is written strictly in pure Vanilla HTML5, modern CSS custom properties, and JavaScript (ES Modules). It communicates using standard RESTful JSON over HTTPS with standard `Authorization: Bearer <token>` headers, and performs direct-to-S3 file uploads using standard `fetch(presignedUrl, { method: 'PUT', body: file })`.
+- **Chosen:** The frontend is written strictly in pure Vanilla HTML5, modern CSS custom properties, and JavaScript (ES Modules). It communicates using standard RESTful JSON over HTTPS with `Authorization: Bearer <custom-jwt>` headers, performs browser-side AES-256-GCM encryption, and uploads encrypted bytes directly to S3 using presigned URLs.
 - **Rejected:** Embedding AWS SDK for JavaScript (`aws-sdk`, `@aws-sdk/client-s3`, AWS Amplify, AWS Cognito Identity SDK).
 - **Rationale:**
   - **Zero Bundle Bloat:** Eliminates multi-megabyte npm dependency trees and build-time bundlers (Webpack, Vite, Rollup).
@@ -40,6 +40,20 @@ This document records every significant architectural, security, and engineering
   - **Cost Optimization:** A customer-managed KMS key incurs a fixed fee of ~$1.00/month per key plus per-request cryptographic API charges.
   - **Sufficient Security:** For this multi-user file storage application, the primary security boundary is multi-user authorization and private bucket isolation. SSE-S3 provides AES-256 encryption at rest at **₹0 cost**, fitting our minimal test envelope (~₹0–₹10).
 
+### Decision: Browser-Side Zero-Knowledge Encryption
+- **Chosen:** The browser generates an AES-256-GCM master file key, encrypts file bytes before upload, and wraps that key with keys derived from the password and recovery key using PBKDF2-SHA-256.
+- **Rationale:** The storage service receives encrypted file content and wrapped key material rather than the plaintext file or the master key. Password reset preserves access to existing files because the recovery-key-wrapped master key is re-wrapped under the new password.
+
+### Decision: Custom DynamoDB Identity Store and Lambda Authorizer
+- **Chosen:** Store user credentials, password salts, wrapped master keys, and quota data in DynamoDB. Issue HMAC-SHA256 JWTs from the auth Lambda and validate them in a dedicated API Gateway Lambda authorizer.
+- **Rejected:** The initial Cognito implementation because the AWS account's Cognito quota was zero.
+- **Rationale:** This keeps the deployed authentication and zero-knowledge key lifecycle under the application's control while preserving the API Gateway authorization boundary. Cognito was attempted first but could not be used in this account.
+
+### Decision: No OTP or Email Delivery
+- **Chosen:** Registration, login, and password recovery operate through DynamoDB and browser-side cryptographic flows without OTP generation or email delivery.
+- **Rejected:** Cognito verification emails, SES, SMTP, and application-managed OTP services.
+- **Rationale:** The project contains no email provider integration and no verification-code persistence or generation. Email addresses are stored for identity lookup and file-sharing metadata only.
+
 ### Decision: All 4 S3 Block Public Access (BPA) Flags + TLS Enforcement
 - **Chosen:** The S3 storage bucket has `block_public_acls`, `block_public_policy`, `ignore_public_acls`, and `restrict_public_buckets` set to `true`. The bucket policy explicitly denies any request where `aws:SecureTransport == false`.
 - **Rejected:** Public or semi-public bucket access policies.
@@ -56,12 +70,12 @@ This document records every significant architectural, security, and engineering
 
 ## 3. Cloud Infrastructure & CI/CD
 
-### Decision: Direct S3 Static Website Hosting (Option B) Over CloudFront OAC
+### Decision: Direct S3 Static Website Hosting After CloudFront Quota Block
 - **Chosen:** Hosting frontend static assets directly via Amazon S3 Static Website Hosting with SPA fallback routing (`index.html` configured as both index and error document).
-- **Rejected:** Amazon CloudFront CDN Distribution with Origin Access Control (OAC).
+- **Rejected:** The initial CloudFront deployment attempt because the AWS account's CloudFront quota was zero.
 - **Rationale:**
-  - **Anti-Abuse Verification Holds:** AWS places automated anti-abuse verification holds on global CloudFront distribution creation for new accounts (`403 AccessDenied: Your account must be verified before you can add new CloudFront resources`).
-  - **Instant Zero-Cost Deployment:** Direct S3 static hosting bypasses the verification hold completely, enabling immediate, automated, and zero-cost frontend deployment.
+  - **Account Quota:** CloudFront could not be provisioned in this account because its quota was zero.
+  - **Instant Deployment:** Direct S3 static hosting enabled deployment without CloudFront.
 
 ### Decision: Keyless GitHub Actions CI/CD via OpenID Connect (OIDC)
 - **Chosen:** Authenticate GitHub Actions to AWS using `sts:AssumeRoleWithWebIdentity` with repository-scoped OIDC trust policies.

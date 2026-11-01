@@ -3,6 +3,7 @@
  *
  * Core router, page views, and interactive state manager.
  * Zero external JS dependencies.
+ * Zero-Knowledge Client-Side Encryption with Recovery Key.
  */
 
 import { api, getSession } from './api/client.js';
@@ -78,7 +79,7 @@ function getFileIcon(fileName, contentType = '') {
   if (['csv', 'xlsx', 'xls'].includes(ext)) return '📊';
   if (['mp4', 'mov', 'avi', 'webm'].includes(ext)) return '🎬';
   if (['mp3', 'wav', 'ogg'].includes(ext)) return '🎵';
-  if (['py', 'js', 'ts', 'html', 'css', 'json', 'tf'].includes(ext)) return '💻';
+  if (['py', 'js', 'ts', 'html', 'css', 'json', 'tf', 'txt'].includes(ext)) return '💻';
   return '📁';
 }
 
@@ -95,10 +96,11 @@ const state = {
   files: [],
   sharedFiles: [],
   quota: { usedBytes: 0, quotaBytes: 1073741824, percentage: 0 },
-  activeModal: null, // null | 'upload' | 'create_folder' | 'share'
+  activeModal: null, // null | 'upload' | 'create_folder' | 'share' | 'recovery_key' | 'security_info'
   selectedFileForShare: null,
   isUploading: false,
-  uploadProgress: 0
+  uploadProgress: 0,
+  recoveryModalData: null // { recoveryKey, email, isReset }
 };
 
 // ==========================================================================
@@ -112,7 +114,7 @@ function renderAuthShell(contentHtml) {
         <div class="auth-header">
           <div class="auth-logo">☁️</div>
           <h1 class="auth-title">Secure Cloud Storage</h1>
-          <p class="auth-subtitle">Encrypted, multi-user cloud file storage on AWS</p>
+          <p class="auth-subtitle">Zero-Knowledge Encrypted Cloud File Storage on AWS</p>
         </div>
         ${contentHtml}
       </div>
@@ -130,6 +132,9 @@ function renderLogin() {
       <div class="form-group">
         <label class="form-label" for="login-password">Password</label>
         <input class="form-input" type="password" id="login-password" placeholder="••••••••" value="Password123!" required />
+      </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:-6px; margin-bottom:8px;">
+        <a href="#/forgot-password" class="auth-link-sm">Forgot password?</a>
       </div>
       <button type="submit" class="btn-primary" id="login-submit-btn">
         Sign In →
@@ -152,8 +157,12 @@ function renderRegister() {
         <label class="form-label" for="reg-password">Password</label>
         <input class="form-input" type="password" id="reg-password" placeholder="At least 8 characters" minlength="8" required />
       </div>
+      <div class="form-group">
+        <label class="form-label" for="reg-confirm-password">Confirm Password</label>
+        <input class="form-input" type="password" id="reg-confirm-password" placeholder="Re-enter password" minlength="8" required />
+      </div>
       <button type="submit" class="btn-primary" id="register-submit-btn">
-        Create Account & Send Code →
+        Create Account & Generate Key →
       </button>
     </form>
     <div class="auth-footer">
@@ -162,23 +171,38 @@ function renderRegister() {
   `);
 }
 
-function renderVerify(email = '') {
+function renderForgotPassword() {
   return renderAuthShell(`
-    <form id="verify-form" class="auth-form">
+    <form id="forgot-password-form" class="auth-form">
       <div class="form-group">
-        <label class="form-label" for="verify-email">Email Address</label>
-        <input class="form-input" type="email" id="verify-email" value="${escapeHtml(email)}" required />
+        <label class="form-label" for="reset-email">Email Address</label>
+        <input class="form-input" type="email" id="reset-email" placeholder="alice@example.com" required />
       </div>
       <div class="form-group">
-        <label class="form-label" for="verify-code">Verification Code</label>
-        <input class="form-input" type="text" id="verify-code" placeholder="6-digit code (e.g. 123456)" required />
+        <label class="form-label" for="reset-recovery-key">24-Character Recovery Key</label>
+        <input 
+          class="form-input" 
+          type="text" 
+          id="reset-recovery-key" 
+          placeholder="A3K9-X7M2-P1Q8-4V5B-Z9Y0-C2D1" 
+          required 
+          style="font-family:monospace; font-weight:600; text-transform:uppercase; letter-spacing:0.05em;" 
+        />
       </div>
-      <button type="submit" class="btn-primary" id="verify-submit-btn">
-        Verify Email & Activate →
+      <div class="form-group">
+        <label class="form-label" for="reset-new-password">New Password</label>
+        <input class="form-input" type="password" id="reset-new-password" placeholder="At least 8 characters" minlength="8" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="reset-confirm-password">Confirm New Password</label>
+        <input class="form-input" type="password" id="reset-confirm-password" placeholder="Re-enter new password" minlength="8" required />
+      </div>
+      <button type="submit" class="btn-primary" id="reset-submit-btn">
+        Restore Access & Rotate Key →
       </button>
     </form>
     <div class="auth-footer">
-      Back to <a href="#/login">Sign in</a>
+      Remember your password? <a href="#/login">Sign in</a>
     </div>
   `);
 }
@@ -207,7 +231,7 @@ function renderAppShell(contentHtml, activeNav = 'files') {
 
         <div class="sidebar-actions">
           <button class="btn-upload-primary" id="btn-open-upload">
-            <span>+</span> Upload New File
+            <span>+</span> Upload Encrypted File
           </button>
           <button class="btn-secondary" style="width:100%; justify-content:center;" id="btn-open-new-folder">
             <span>📁</span> New Folder
@@ -258,6 +282,9 @@ function renderAppShell(contentHtml, activeNav = 'files') {
 
           <div class="header-right">
             ${api.isMock() ? '<span style="font-size:11px; background:#fef3c7; color:#92400e; padding:4px 8px; border-radius:4px; font-weight:600;">Mock Mode</span>' : ''}
+            <button class="btn-secondary" id="btn-open-security" title="Zero-Knowledge Encryption Status">
+              🛡️ Encryption
+            </button>
             <div class="user-badge">
               <div class="user-avatar">${userInitial}</div>
               <span>${escapeHtml(userEmail)}</span>
@@ -277,6 +304,15 @@ function renderAppShell(contentHtml, activeNav = 'files') {
 
     <!-- Modals Container -->
     <div id="modal-root"></div>
+
+    <!-- Global Drag & Drop Overlay (Google Drive style) -->
+    <div class="global-drag-overlay" id="global-drag-overlay">
+      <div class="global-drag-card">
+        <div class="global-drag-icon">☁️</div>
+        <div class="global-drag-title">Drop files to instantly upload</div>
+        <div class="global-drag-sub">Direct client-side AES-256-GCM encryption before transfer</div>
+      </div>
+    </div>
   `;
 }
 
@@ -322,7 +358,7 @@ function renderFilesExplorer() {
   if (filteredFiles.length > 0) {
     if (state.viewMode === 'grid') {
       filesSectionHtml = `
-        <div class="section-title">Files</div>
+        <div class="section-title">Files (Zero-Knowledge Encrypted)</div>
         <div class="files-grid">
           ${filteredFiles.map(file => {
             const icon = getFileIcon(file.name, file.contentType);
@@ -332,7 +368,7 @@ function renderFilesExplorer() {
                 <div class="file-card-top">
                   <div class="file-type-badge">${icon}</div>
                   <div class="file-actions-menu">
-                    <button class="icon-btn" data-action="download" data-file-id="${file.id}" title="Download">⬇️</button>
+                    <button class="icon-btn" data-action="download" data-file-id="${file.id}" title="Decrypt & Download">⬇️</button>
                     <button class="icon-btn" data-action="share" data-file-id="${file.id}" title="Share">👥</button>
                     <button class="icon-btn danger" data-action="delete" data-file-id="${file.id}" title="Delete">🗑️</button>
                   </div>
@@ -352,7 +388,7 @@ function renderFilesExplorer() {
     } else {
       // Table view
       filesSectionHtml = `
-        <div class="section-title">Files</div>
+        <div class="section-title">Files (Zero-Knowledge Encrypted)</div>
         <div class="files-table-container">
           <table class="files-table">
             <thead>
@@ -382,7 +418,7 @@ function renderFilesExplorer() {
                       ${isShared ? `<span class="shared-badge">Shared with ${file.shares.length}</span>` : '<span style="color:var(--text-muted);">Private</span>'}
                     </td>
                     <td style="text-align:right;">
-                      <button class="icon-btn" data-action="download" data-file-id="${file.id}" title="Download">⬇️</button>
+                      <button class="icon-btn" data-action="download" data-file-id="${file.id}" title="Decrypt & Download">⬇️</button>
                       <button class="icon-btn" data-action="share" data-file-id="${file.id}" title="Share">👥</button>
                       <button class="icon-btn danger" data-action="delete" data-file-id="${file.id}" title="Delete">🗑️</button>
                     </td>
@@ -404,7 +440,15 @@ function renderFilesExplorer() {
         <div class="empty-icon">📂</div>
         <div class="empty-title">This folder is empty</div>
         <div class="empty-description">
-          Upload files or create subfolders using the buttons on the left sidebar to get started.
+          Upload files or create subfolders using the buttons below or drag & drop files anywhere on the screen.
+        </div>
+        <div style="display:flex; gap:12px; margin-top:16px;">
+          <button class="btn-primary" id="btn-empty-upload" style="width:auto; padding:8px 18px;">
+            <span>+</span> Upload Files
+          </button>
+          <button class="btn-secondary" id="btn-empty-folder" style="width:auto; padding:8px 18px;">
+            <span>📁</span> New Folder
+          </button>
         </div>
       </div>
     `;
@@ -477,7 +521,7 @@ function renderSharedWithMe() {
                   <td>${formatBytes(file.sizeBytes)}</td>
                   <td><span class="shared-badge">Viewer</span></td>
                   <td style="text-align:right;">
-                    <button class="icon-btn" data-action="download" data-file-id="${file.id}" title="Download">⬇️</button>
+                    <button class="icon-btn" data-action="download" data-file-id="${file.id}" title="Decrypt & Download">⬇️</button>
                   </td>
                 </tr>
               `;
@@ -511,26 +555,123 @@ function renderModal() {
     return;
   }
 
-  if (state.activeModal === 'upload') {
+  if (state.activeModal === 'recovery_key') {
+    const data = state.recoveryModalData || {};
+    const recoveryKey = data.recoveryKey || '';
+    const isReset = Boolean(data.isReset);
+
+    root.innerHTML = `
+      <div class="modal-backdrop" id="modal-backdrop">
+        <div class="modal-card recovery-modal-card">
+          <div class="modal-header">
+            <div class="modal-title">🔑 ${isReset ? 'New Recovery Key Generated' : 'Save Your Recovery Key'}</div>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:13px; color:var(--text-secondary); line-height:1.5;">
+              ${isReset
+                ? 'Your password has been updated and your master encryption key re-wrapped. <strong>Save this new recovery key immediately</strong> — your previous key is now obsolete.'
+                : 'Secure Cloud Storage uses <strong>Zero-Knowledge Client-Side Encryption</strong>. Your files are encrypted with a Master File Key that only you hold. This 24-character recovery key is the <strong>only way to regain access</strong> if you forget your password.'}
+            </p>
+
+            <div class="recovery-key-display">
+              <div class="recovery-key-text" id="recovery-key-text">${escapeHtml(recoveryKey)}</div>
+              <div class="recovery-key-actions">
+                <button type="button" class="btn-recovery-action" id="btn-copy-recovery-key">
+                  📋 Copy Key
+                </button>
+                <button type="button" class="btn-recovery-action" id="btn-download-recovery-key">
+                  💾 Download .TXT
+                </button>
+              </div>
+            </div>
+
+            <div class="security-warning-box">
+              <span class="security-warning-icon">⚠️</span>
+              <div>
+                <strong>Keep this key secret and secure.</strong> Store it in a password manager or physical vault. We do not store this key and cannot reset it or recover your files for you.
+              </div>
+            </div>
+
+            <label class="recovery-confirm-group" for="recovery-confirm-check">
+              <input type="checkbox" id="recovery-confirm-check" />
+              <span>I have safely copied or downloaded my recovery key. I understand that without it or my password, my files cannot be recovered.</span>
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-primary" id="btn-recovery-continue" disabled style="width:auto; padding:10px 24px;">
+              Continue to Sign In →
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    attachRecoveryKeyModalEvents();
+  } else if (state.activeModal === 'security_info') {
+    const session = getSession();
+    const hasMfk = Boolean(session && session.mfk);
+
     root.innerHTML = `
       <div class="modal-backdrop" id="modal-backdrop">
         <div class="modal-card">
           <div class="modal-header">
-            <div class="modal-title">Upload File to S3</div>
+            <div class="modal-title">🛡️ Zero-Knowledge Security Overview</div>
+            <button class="modal-close-btn" id="modal-close">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="security-info-grid">
+              <div class="security-info-row">
+                <span class="security-info-label">File Encryption</span>
+                <span class="security-info-val">AES-256-GCM (Browser)</span>
+              </div>
+              <div class="security-info-row">
+                <span class="security-info-label">Key Wrapping</span>
+                <span class="security-info-val">PBKDF2-SHA256 (300k rounds)</span>
+              </div>
+              <div class="security-info-row">
+                <span class="security-info-label">Auth Hashing</span>
+                <span class="security-info-val">PBKDF2-SHA256 (260k rounds)</span>
+              </div>
+              <div class="security-info-row">
+                <span class="security-info-label">Master Key Status</span>
+                <span class="security-info-val">${hasMfk ? '✓ Active in Session' : 'Locked'}</span>
+              </div>
+              <div class="security-info-row">
+                <span class="security-info-label">S3 Cloud Storage</span>
+                <span class="security-info-val">Ciphertext Blobs Only</span>
+              </div>
+            </div>
+
+            <div style="font-size:12px; color:var(--text-muted); line-height:1.5;">
+              All encryption and decryption operations take place locally in your browser memory using the native Web Crypto API. Plaintext files and master encryption keys are never sent to the server.
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" id="modal-cancel">Close</button>
+          </div>
+        </div>
+      </div>
+    `;
+    attachSecurityInfoModalEvents();
+  } else if (state.activeModal === 'upload') {
+    root.innerHTML = `
+      <div class="modal-backdrop" id="modal-backdrop">
+        <div class="modal-card">
+          <div class="modal-header">
+            <div class="modal-title">Upload Encrypted File</div>
             <button class="modal-close-btn" id="modal-close">✕</button>
           </div>
           <div class="modal-body">
             <div class="dropzone" id="dropzone">
               <div class="dropzone-icon">☁️</div>
               <div class="dropzone-text">Click to choose a file or drag & drop here</div>
-              <div class="dropzone-subtext">Direct S3 presigned upload with SSE-S3 AES-256 encryption</div>
-              <input type="file" id="file-input-element" style="display:none;" />
+              <div class="dropzone-subtext">Encrypted client-side with AES-256-GCM before transfer to S3</div>
+              <input type="file" id="file-input-element" multiple style="display:none;" />
             </div>
 
             ${state.isUploading ? `
               <div class="upload-progress-container">
                 <div class="upload-progress-header">
-                  <span>Uploading directly to S3...</span>
+                  <span>Encrypting & uploading to S3...</span>
                   <span>${state.uploadProgress}%</span>
                 </div>
                 <div class="quota-progress-track">
@@ -617,6 +758,77 @@ function renderModal() {
 // Event Listeners & Router
 // ==========================================================================
 
+function attachRecoveryKeyModalEvents() {
+  const copyBtn = document.getElementById('btn-copy-recovery-key');
+  const downloadBtn = document.getElementById('btn-download-recovery-key');
+  const check = document.getElementById('recovery-confirm-check');
+  const continueBtn = document.getElementById('btn-recovery-continue');
+
+  copyBtn?.addEventListener('click', async () => {
+    const key = state.recoveryModalData?.recoveryKey || '';
+    try {
+      await navigator.clipboard.writeText(key);
+      copyBtn.classList.add('copied');
+      copyBtn.innerHTML = '✓ Copied!';
+      setTimeout(() => {
+        copyBtn.classList.remove('copied');
+        copyBtn.innerHTML = '📋 Copy Key';
+      }, 2500);
+      showToast('Recovery key copied to clipboard!', 'success');
+    } catch {
+      showToast('Please select and copy the recovery key text manually.', 'info');
+    }
+  });
+
+  downloadBtn?.addEventListener('click', () => {
+    const data = state.recoveryModalData || {};
+    const content = `SECURE CLOUD STORAGE — EMERGENCY RECOVERY KEY
+=============================================================
+Email: ${data.email || 'Your Account'}
+Date: ${new Date().toUTCString()}
+Recovery Key: ${data.recoveryKey || ''}
+Security: Zero-Knowledge Client-Side AES-256-GCM
+
+IMPORTANT INSTRUCTIONS:
+1. Store this text file in an offline encrypted vault or password manager.
+2. If you lose your password, this recovery key is the ONLY way to regain access to your files.
+3. No one, including cloud storage administrators, can recover your files without this key.
+=============================================================`;
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `secure-cloud-storage-recovery-key-${(data.email || 'account').replace(/[^a-zA-Z0-9]/g, '_')}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('Recovery key downloaded as text file.', 'success');
+  });
+
+  check?.addEventListener('change', (e) => {
+    if (continueBtn) {
+      continueBtn.disabled = !e.target.checked;
+    }
+  });
+
+  continueBtn?.addEventListener('click', () => {
+    state.activeModal = null;
+    state.recoveryModalData = null;
+    renderModal();
+    showToast('Setup complete! You can now sign in.', 'success');
+    window.location.hash = '#/login';
+  });
+}
+
+function attachSecurityInfoModalEvents() {
+  const closeBtn = document.getElementById('modal-close');
+  const cancelBtn = document.getElementById('modal-cancel');
+  const close = () => { state.activeModal = null; renderModal(); };
+  closeBtn?.addEventListener('click', close);
+  cancelBtn?.addEventListener('click', close);
+}
+
 function attachUploadModalEvents() {
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input-element');
@@ -640,14 +852,14 @@ function attachUploadModalEvents() {
   dropzone?.addEventListener('drop', (e) => {
     e.preventDefault();
     dropzone.classList.remove('dragover');
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileUpload(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesUpload(e.dataTransfer.files);
     }
   });
 
   fileInput?.addEventListener('change', (e) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFileUpload(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      handleFilesUpload(e.target.files);
     }
   });
 }
@@ -720,28 +932,47 @@ function attachShareModalEvents() {
       }
     });
   });
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addBtn?.click();
+    }
+  });
 }
 
-async function handleFileUpload(file) {
+async function handleFilesUpload(filesList) {
+  if (!filesList || filesList.length === 0) return;
+  const files = Array.from(filesList);
+
+  state.activeModal = 'upload';
   state.isUploading = true;
   state.uploadProgress = 0;
   renderModal();
 
-  try {
-    await api.uploadFile(file, state.currentFolderId, (progress) => {
-      state.uploadProgress = progress;
-      renderModal();
-    });
-    showToast(`"${file.name}" uploaded successfully.`, 'success');
-    state.activeModal = null;
-    state.isUploading = false;
-    renderModal();
-    await loadFilesView();
-  } catch (err) {
-    state.isUploading = false;
-    renderModal();
-    showToast(err.message, 'error');
+  let successCount = 0;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    try {
+      if (files.length > 1) {
+        showToast(`Encrypting & uploading (${i + 1}/${files.length}): ${file.name}...`, 'info');
+      }
+      await api.uploadFile(file, state.currentFolderId, (progress) => {
+        state.uploadProgress = Math.round(((i / files.length) * 100) + (progress / files.length));
+        renderModal();
+      });
+      successCount++;
+    } catch (err) {
+      showToast(`Failed to upload "${file.name}": ${err.message}`, 'error');
+    }
   }
+
+  state.activeModal = null;
+  state.isUploading = false;
+  renderModal();
+  if (successCount > 0) {
+    showToast(`Successfully encrypted and uploaded ${successCount} file${successCount > 1 ? 's' : ''}.`, 'success');
+  }
+  await loadFilesView();
 }
 
 async function loadFilesView(fetchQuota = true) {
@@ -789,6 +1020,11 @@ function attachAppShellEvents() {
     renderModal();
   });
 
+  document.getElementById('btn-open-security')?.addEventListener('click', () => {
+    state.activeModal = 'security_info';
+    renderModal();
+  });
+
   document.getElementById('btn-logout')?.addEventListener('click', async () => {
     await api.logout();
     window.location.hash = '#/login';
@@ -799,7 +1035,6 @@ function attachAppShellEvents() {
   searchInput?.addEventListener('input', (e) => {
     state.searchQuery = e.target.value;
     renderCurrentRoute();
-    // Retain focus
     const newSearch = document.getElementById('search-input');
     if (newSearch) {
       newSearch.focus();
@@ -853,8 +1088,9 @@ function attachAppShellEvents() {
 
       if (action === 'download') {
         try {
-          showToast('Preparing download...', 'info');
+          showToast('Decrypting file with your Master Key...', 'info');
           await api.downloadFile(fileId);
+          showToast('Decryption complete! File downloaded.', 'success');
         } catch (err) {
           showToast(err.message, 'error');
         }
@@ -878,6 +1114,58 @@ function attachAppShellEvents() {
       }
     });
   });
+
+  // Empty state action buttons
+  document.getElementById('btn-empty-upload')?.addEventListener('click', () => {
+    state.activeModal = 'upload';
+    state.isUploading = false;
+    renderModal();
+  });
+
+  document.getElementById('btn-empty-folder')?.addEventListener('click', () => {
+    state.activeModal = 'create_folder';
+    renderModal();
+  });
+
+  // Global Drag & drop anywhere over window
+  const dragOverlay = document.getElementById('global-drag-overlay');
+  let dragCount = 0;
+
+  window.addEventListener('dragenter', (e) => {
+    if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+      dragCount++;
+      dragOverlay?.classList.add('active');
+    }
+  });
+
+  window.addEventListener('dragleave', () => {
+    dragCount--;
+    if (dragCount <= 0) {
+      dragCount = 0;
+      dragOverlay?.classList.remove('active');
+    }
+  });
+
+  window.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragCount = 0;
+    dragOverlay?.classList.remove('active');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesUpload(e.dataTransfer.files);
+    }
+  });
+
+  // Keyboard shortcut: Escape to dismiss modals
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.activeModal && !state.isUploading && state.activeModal !== 'recovery_key') {
+      state.activeModal = null;
+      renderModal();
+    }
+  });
 }
 
 function attachAuthEvents() {
@@ -886,12 +1174,23 @@ function attachAuthEvents() {
     e.preventDefault();
     const email = document.getElementById('login-email')?.value;
     const password = document.getElementById('login-password')?.value;
+    const submitBtn = document.getElementById('login-submit-btn');
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerText = 'Unlocking Master Key...';
+    }
+
     try {
       await api.login(email, password);
-      showToast('Signed in successfully.', 'success');
+      showToast('Signed in & Master Key unlocked!', 'success');
       window.location.hash = '#/files';
     } catch (err) {
       showToast(err.message, 'error');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerText = 'Sign In →';
+      }
     }
   });
 
@@ -900,28 +1199,82 @@ function attachAuthEvents() {
     e.preventDefault();
     const email = document.getElementById('reg-email')?.value;
     const password = document.getElementById('reg-password')?.value;
+    const confirmPassword = document.getElementById('reg-confirm-password')?.value;
+    const submitBtn = document.getElementById('register-submit-btn');
+
+    if (password !== confirmPassword) {
+      showToast('Passwords do not match.', 'error');
+      return;
+    }
+    if (password.length < 8) {
+      showToast('Password must be at least 8 characters.', 'error');
+      return;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerText = 'Generating Keys & Deriving Wrappers...';
+    }
+
     try {
       const res = await api.register(email, password);
-      showToast(res.message || 'Verification code sent.', 'info');
-      window.location.hash = `#/verify?email=${encodeURIComponent(email)}`;
+      state.recoveryModalData = {
+        recoveryKey: res.recoveryKey,
+        email: email,
+        isReset: false
+      };
+      state.activeModal = 'recovery_key';
+      renderModal();
     } catch (err) {
       showToast(err.message, 'error');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerText = 'Create Account & Generate Key →';
+      }
     }
   });
 
-  const verifyForm = document.getElementById('verify-form');
-  verifyForm?.addEventListener('submit', async (e) => {
+  const forgotForm = document.getElementById('forgot-password-form');
+  forgotForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = document.getElementById('verify-email')?.value;
-    const code = document.getElementById('verify-code')?.value;
+    const email = document.getElementById('reset-email')?.value;
+    const recoveryKey = document.getElementById('reset-recovery-key')?.value;
+    const newPassword = document.getElementById('reset-new-password')?.value;
+    const confirmPassword = document.getElementById('reset-confirm-password')?.value;
+    const submitBtn = document.getElementById('reset-submit-btn');
+
+    if (newPassword !== confirmPassword) {
+      showToast('New passwords do not match.', 'error');
+      return;
+    }
+    if (newPassword.length < 8) {
+      showToast('Password must be at least 8 characters.', 'error');
+      return;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerText = 'Unwrapping & Re-encrypting Key...';
+    }
+
     try {
-      await api.verifyOtp(email, code);
-      showToast('Email verified! You can now log in.', 'success');
-      window.location.hash = '#/login';
+      const res = await api.resetPassword(email, recoveryKey, newPassword);
+      state.recoveryModalData = {
+        recoveryKey: res.newRecoveryKey,
+        email: email,
+        isReset: true
+      };
+      state.activeModal = 'recovery_key';
+      renderModal();
     } catch (err) {
       showToast(err.message, 'error');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerText = 'Restore Access & Rotate Key →';
+      }
     }
   });
+
 }
 
 // ==========================================================================
@@ -938,7 +1291,7 @@ function renderCurrentRoute() {
   const session = getSession();
 
   // Auth Guards
-  const isAuthRoute = ['#/login', '#/register', '#/verify'].includes(route);
+  const isAuthRoute = ['#/login', '#/register', '#/forgot-password'].includes(route);
   if (!session && !isAuthRoute) {
     window.location.hash = '#/login';
     return;
@@ -954,9 +1307,8 @@ function renderCurrentRoute() {
   } else if (route === '#/register') {
     app.innerHTML = renderRegister();
     attachAuthEvents();
-  } else if (route === '#/verify') {
-    const email = params.get('email') || '';
-    app.innerHTML = renderVerify(email);
+  } else if (route === '#/forgot-password') {
+    app.innerHTML = renderForgotPassword();
     attachAuthEvents();
   } else if (route === '#/shared') {
     app.innerHTML = renderAppShell(renderSharedWithMe(), 'shared');

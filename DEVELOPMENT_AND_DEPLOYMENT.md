@@ -1,6 +1,6 @@
 # Development & Deployment Journey — Secure Cloud File Storage
 
-This document chronicles the end-to-end engineering journey behind **Secure Cloud File Storage** on AWS — detailing architectural phases, security boundaries, and a comprehensive 22-run CI/CD diagnostic record that served as the **infrastructure hardening ground** for our cloud engineering portfolio.
+This document chronicles the end-to-end engineering journey behind **Secure Cloud File Storage** on AWS — detailing architectural phases, security boundaries, and the CI/CD diagnostic record that served as the **infrastructure hardening ground** for our cloud engineering portfolio.
 
 ---
 
@@ -23,8 +23,8 @@ The application was engineered across four systematic phases, ensuring strict ar
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
 │  Phase 3: Infrastructure as Code with Terraform             │
-│  • Single-table DynamoDB, private S3 buckets, Cognito Pool  │
-│  • 5 Python 3.12 Lambdas, HTTP API v2, least-privilege IAM  │
+│  • Single-table DynamoDB, private S3 buckets, custom JWT auth │
+│  • 6 Python 3.12 Lambdas, HTTP API v2, least-privilege IAM  │
 └──────────────────────────────┬──────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
@@ -41,9 +41,9 @@ The application was engineered across four systematic phases, ensuring strict ar
 **Goal:** Build a clean, responsive single-page application with zero build toolchains, instant loading, and complete offline capability.
 
 1. **Zero-Build Philosophy:** Built using standard **HTML5, Modern Vanilla CSS, and JavaScript (ES Modules)**. It requires zero npm installs, zero Node.js runtime, and runs immediately via Python's built-in HTTP server (`python -m http.server 8080`).
-2. **Hash-Based SPA Router:** Implemented client-side routing (`#/`, `#/login`, `#/register`, `#/verify`, `#/files`, `#/shared`) to ensure client-side navigation functions seamlessly on static web storage without triggering 404 errors.
-3. **Pluggable Mock & Real API Layer:** Created an offline API adapter ([`mock.js`](file:///frontend/src/api/mock.js)) that intercepts API calls when `window.API_BASE_URL` is empty, simulating user registration, OTP verification, login JWTs, folder hierarchy, and direct S3 uploads via browser memory blobs.
-4. **Direct S3 Upload Workflow:** Implemented standard `XMLHttpRequest` PUT streaming directly to presigned S3 URLs with `x-amz-server-side-encryption: AES256` headers and real-time upload progress tracking.
+2. **Hash-Based SPA Router:** Implemented client-side routing (`#/`, `#/login`, `#/register`, `#/forgot-password`, `#/files`, `#/shared`) to ensure client-side navigation functions seamlessly on static web storage without triggering 404 errors.
+3. **Pluggable Mock & Real API Layer:** Created an offline API adapter ([`mock.js`](./frontend/src/api/mock.js)) that intercepts API calls when `window.API_BASE_URL` is empty, simulating registration, login, password recovery, folder hierarchy, and direct S3 uploads via browser memory blobs.
+4. **Direct S3 Upload Workflow:** Encrypts file bytes in the browser with AES-256-GCM, then uses `XMLHttpRequest` PUT streaming directly to presigned S3 URLs with `x-amz-server-side-encryption: AES256` headers and real-time upload progress tracking.
 
 ---
 
@@ -51,7 +51,7 @@ The application was engineered across four systematic phases, ensuring strict ar
 
 **Goal:** Implement robust, portable serverless handlers while enforcing strict separation between business logic and cloud provider SDKs.
 
-1. **Hexagonal Architecture (Ports & Adapters):** Core business logic in Lambda handlers (`auth`, `files`, `folders`, `sharing`, `quota`) is written in pure **Python with zero `boto3` or AWS SDK imports**. All AWS SDK communications (Cognito IDP, S3, DynamoDB) are isolated into dedicated `adapters.py` files.
+1. **Hexagonal Architecture (Ports & Adapters):** Core business logic in Lambda handlers (`auth`, `files`, `folders`, `sharing`, `quota`) is written in pure **Python with zero `boto3` or AWS SDK imports**. AWS SDK communications for S3 and DynamoDB are isolated into dedicated `adapters.py` files; authentication uses DynamoDB and a custom HMAC-SHA256 JWT authorizer.
 2. **Presigned S3 URL Engine:** Heavy file I/O is offloaded directly to Amazon S3. Handlers authorize user identity and quota, then generate 5-minute (300-second) presigned `PUT` URLs (for uploads with `AES256` encryption) and presigned `GET` URLs (for downloads).
 3. **Multi-User Sharing with GSI1:** Implemented viewer-level file sharing by email. Handlers write sharing records to DynamoDB and query Global Secondary Index 1 (`GSI1PK = RECIPIENT#<email>`) for the dedicated "Shared with Me" view.
 4. **Atomic Quota Tracking:** Implemented live quota tracking that increments storage consumption upon S3 upload confirmation and reclaims quota upon file deletion.
@@ -65,11 +65,12 @@ The application was engineered across four systematic phases, ensuring strict ar
 1. **Modular IaC Layout:** Structured Terraform into 6 single-responsibility modules:
    - `modules/storage`: Private S3 files bucket with SSE-S3 default encryption (`AES256`), all 4 Block Public Access flags enabled, TLS-only bucket policy, and CORS rules.
    - `modules/database`: DynamoDB single-table with on-demand capacity (`PAY_PER_REQUEST`), Point-in-Time Recovery (PITR), and `GSI1`.
-   - `modules/cognito`: Cognito User Pool with email verification codes and web client (`ALLOW_USER_PASSWORD_AUTH`).
-   - `modules/iam`: Least-privilege Lambda execution role with scoped access policies for S3, DynamoDB, Cognito IDP, and CloudWatch Logs.
-   - `modules/compute`: 5 Python 3.12 Lambda functions, HTTP API Gateway v2 with Cognito JWT Authorizer, and 14 integration routes.
-   - `modules/frontend`: S3 static hosting bucket configured for direct SPA website hosting.
-2. **Automated Resource Wiring:** Injected dynamic bucket names, table names, user pool IDs, and client IDs directly into Lambda environment variables from Terraform's internal dependency graph.
+   - `modules/cognito`: Initial Cognito implementation attempt; the account quota was zero, so it could not be used and is not instantiated by the root configuration.
+   - `modules/iam`: Least-privilege Lambda execution role with scoped access policies for S3, DynamoDB, and CloudWatch Logs.
+   - `modules/compute`: 6 Python 3.12 Lambda functions, HTTP API Gateway v2 with a custom Lambda authorizer, and 15 routes.
+   - `modules/frontend`: Public S3 frontend bucket with SPA assets and an HTTPS regional object URL; the CloudFront attempt was blocked by the account's zero quota.
+2. **Automated Resource Wiring:** Injected dynamic bucket names and table names directly into Lambda environment variables from Terraform's internal dependency graph.
+3. **Email and OTP Scope:** No deployed component generates OTPs or sends email. The current auth flow stores email addresses for identity lookup and sharing, while password recovery uses the recovery key.
 
 ---
 
@@ -315,13 +316,13 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
 
 ### Stage 2: Initial Provisioning, CloudFront Holds & Ephemeral State (Runs 13–16)
 
-* **Runs 13–14 (IAM Policy Creation & CloudFront Account Hold)**:
+* **Runs 13–14 (IAM Policy Creation & CloudFront Quota Block)**:
   * OIDC authentication succeeded, and Terraform began provisioning cloud resources.
   * Encountered missing customer-managed IAM policy lifecycle permissions (`iam:CreatePolicy`, `iam:DeletePolicy`, `iam:ListRolePolicies`).
-  * AWS returned `403 AccessDenied` on CloudFront distribution creation: *“Your account must be verified before you can add new CloudFront resources”* (an automated anti-abuse hold on new AWS accounts).
-  * **Architectural Transition (Option B):** Rather than waiting days for AWS Support ticket verification, transitioned `modules/frontend` to **Direct S3 Static Website Hosting** with SPA fallback (`index.html`), enabling immediate zero-cost cloud deployment.
+  * CloudFront could not be provisioned because the account's CloudFront quota was zero.
+  * **Architectural Transition:** Transitioned `modules/frontend` to **Direct S3 Static Website Hosting** with SPA fallback (`index.html`), enabling deployment without CloudFront.
 * **Runs 15–16 (Ephemeral Runner State & Orphaned Cleanup)**:
-  * Because runs failed midway on ephemeral GitHub Actions runners without a remote Terraform backend, resources created in earlier partial runs (DynamoDB table, S3 buckets, Cognito pool) were discarded from local state.
+  * Because runs failed midway on ephemeral GitHub Actions runners without a remote Terraform backend, resources created in earlier partial runs (DynamoDB table and S3 buckets) were discarded from local state.
   * On subsequent runs, fresh runners collided with existing AWS resources (`ResourceInUseException`, `EntityAlreadyExists`).
   * Cleaned up orphaned resources directly in the AWS Console to restore a clean baseline.
 
@@ -334,7 +335,7 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
   * **Root Cause:** `iam:PassRole` in the role permissions policy had an overly restrictive condition (`iam:PassedToService: lambda.amazonaws.com`). During function creation, Terraform's provider failed evaluating the role pass condition and entered an internal 15-minute retry loop.
   * **Resolution:** Removed the condition to allow unconditional `iam:PassRole` for Lambda. *(Note: this widens PassRole beyond least-privilege; the correct fix (retry/backoff handling for IAM eventual consistency) is deferred to the ML platform.)*
 * **Run 20 (100% Complete Infrastructure Deployment Success)**:
-  * **All 54 Terraform resources provisioned cleanly in ~45 seconds**: S3 Storage, DynamoDB Single-Table, Cognito User Pool & App Client, 5 Python 3.12 Lambdas, HTTP API Gateway v2 with 14 routes and JWT Authorizer, and Direct S3 Static Website Hosting.
+  * **The deployed Terraform stack provisions the active resources**: private S3 storage, DynamoDB single-table metadata, six Python 3.12 Lambdas, HTTP API Gateway v2 with 15 routes and a custom Lambda authorizer, and direct S3 static website hosting. The initial Cognito attempt is not part of the deployed stack because the account quota was zero.
   * Runtime API endpoint automatically injected into `frontend/config.js`.
   * Static frontend assets synced to S3 and live public application URL published in GitHub Actions step summary.
 
@@ -342,10 +343,10 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
 
 ### Stage 4: Runtime Diagnostics & Hardening Discoveries (Runs 21–22)
 
-* **Run 21 (Cognito IDP IAM Policy Syntax Diagnosis)**:
-  * Testing user registration returned an internal server error.
-  * **Root Cause Diagnosed:** In AWS IAM grammar, client-level Cognito operations (`cognito-idp:SignUp`, `cognito-idp:InitiateAuth`, `cognito-idp:ConfirmSignUp`) operate on the `ClientId` level and do not accept User Pool ARNs. Restricting them to `var.cognito_user_pool_arn` caused IAM to deny the Lambda execution with `AccessDeniedException`.
-  * **Diagnostic Resolution:** Splitting the IAM policy into scoped admin actions (`var.cognito_user_pool_arn`) and client auth actions (`Resource: "*"`).
+* **Run 21 (Cognito Quota and Authentication Design Review)**:
+  * The initial Cognito attempt could not be used because the account's Cognito quota was zero.
+  * The final implementation uses DynamoDB-backed credentials and custom HMAC-SHA256 JWTs instead.
+  * No OTP is generated and no email is sent by the final implementation. The unused verification screen and `api.verifyOtp` call were removed from the frontend.
 * **Run 22 (API Gateway Data-Plane vs. Control-Plane Permission Boundary Diagnosis)**:
   * Testing user login returned `500 {"message":"Internal Server Error"}` with **zero CloudWatch logs** in Lambda.
   * **Root Cause Diagnosed:** In `terraform/modules/compute/main.tf`, the Lambda invocation permission `source_arn` was pointed to the API Gateway control-plane ARN (`${aws_apigatewayv2_api.http_api.arn}/*/*` -> `arn:aws:apigateway:...`). At runtime, API Gateway invokes Lambda using its data-plane execution ARN (`arn:aws:execute-api:...`). Because the ARNs did not match, AWS Lambda denied the invocation at the perimeter before Python code ever started, generating an API Gateway 500 with zero CloudWatch logs.

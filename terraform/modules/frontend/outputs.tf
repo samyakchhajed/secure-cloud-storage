@@ -9,6 +9,6 @@ output "cloudfront_distribution_id" {
 }
 
 output "website_url" {
-  value       = "http://${aws_s3_bucket_website_configuration.frontend_website.website_endpoint}"
-  description = "Public URL of the S3 static web application"
+  value       = "https://${aws_s3_bucket.frontend_bucket.bucket}.s3.${var.aws_region}.amazonaws.com/index.html"
+  description = "HTTPS URL of the S3 static web application"
 }

@@ -1,4 +1,4 @@
-# Compute Module — Lambda Functions & API Gateway HTTP API v2 with Cognito JWT Authorizer
+# Compute Module — Lambda Functions & API Gateway HTTP API v2 with Lambda Authorizer
 
 # 1. Package backend code into zip archive
 data "archive_file" "backend_zip" {
@@ -8,7 +8,7 @@ data "archive_file" "backend_zip" {
   excludes    = ["__pycache__", "*.pyc", ".pytest_cache"]
 }
 
-# 2. Auth Lambda Function (Public signup, verify, login)
+# 2. Auth Lambda Function (Public register & login)
 resource "aws_lambda_function" "auth_lambda" {
   function_name    = "scs-auth-${var.environment}"
   role             = var.lambda_role_arn
@@ -21,8 +21,8 @@ resource "aws_lambda_function" "auth_lambda" {
 
   environment {
     variables = {
-      COGNITO_CLIENT_ID    = var.cognito_client_id
-      COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+      METADATA_TABLE_NAME = var.dynamodb_table_name
+      JWT_SECRET          = var.jwt_secret
     }
   }
 
@@ -125,6 +125,29 @@ resource "aws_lambda_function" "quota_lambda" {
   }
 }
 
+# 7. Lambda Authorizer Function (validates custom HMAC JWTs)
+resource "aws_lambda_function" "authorizer_lambda" {
+  function_name    = "scs-authorizer-${var.environment}"
+  role             = var.lambda_role_arn
+  handler          = "authorizer.handler.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 5
+  memory_size      = 128
+  filename         = data.archive_file.backend_zip.output_path
+  source_code_hash = data.archive_file.backend_zip.output_base64sha256
+
+  environment {
+    variables = {
+      JWT_SECRET = var.jwt_secret
+    }
+  }
+
+  tags = {
+    Name        = "Secure Cloud Storage JWT Authorizer"
+    Environment = var.environment
+  }
+}
+
 # ==========================================================================
 # API Gateway HTTP API (v2)
 # ==========================================================================
@@ -146,17 +169,18 @@ resource "aws_apigatewayv2_api" "http_api" {
   }
 }
 
-# Cognito JWT Authorizer
-resource "aws_apigatewayv2_authorizer" "jwt_authorizer" {
-  api_id           = aws_apigatewayv2_api.http_api.id
-  authorizer_type  = "JWT"
-  identity_sources = ["$request.header.Authorization"]
-  name             = "scs-cognito-jwt-auth"
+# Lambda Authorizer (REQUEST type — payload format 2.0)
+resource "aws_apigatewayv2_authorizer" "lambda_authorizer" {
+  api_id                            = aws_apigatewayv2_api.http_api.id
+  authorizer_type                   = "REQUEST"
+  authorizer_uri                    = aws_lambda_function.authorizer_lambda.invoke_arn
+  authorizer_payload_format_version = "2.0"
+  identity_sources                  = ["$request.header.Authorization"]
+  name                              = "scs-lambda-jwt-auth"
+  enable_simple_responses           = true
 
-  jwt_configuration {
-    audience = [var.cognito_client_id]
-    issuer   = "https://${var.cognito_user_pool_endpoint}"
-  }
+  # Cache authorizer responses for 60 seconds per token
+  authorizer_result_ttl_in_seconds = 60
 }
 
 # Lambda Integrations
@@ -195,16 +219,10 @@ resource "aws_apigatewayv2_integration" "quota_integration" {
   payload_format_version = "2.0"
 }
 
-# Routes — Auth (Public endpoints — No JWT Authorizer)
+# Routes — Auth (Public — No Authorizer)
 resource "aws_apigatewayv2_route" "auth_register" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /api/auth/register"
-  target    = "integrations/${aws_apigatewayv2_integration.auth_integration.id}"
-}
-
-resource "aws_apigatewayv2_route" "auth_verify" {
-  api_id    = aws_apigatewayv2_api.http_api.id
-  route_key = "POST /api/auth/verify"
   target    = "integrations/${aws_apigatewayv2_integration.auth_integration.id}"
 }
 
@@ -214,96 +232,108 @@ resource "aws_apigatewayv2_route" "auth_login" {
   target    = "integrations/${aws_apigatewayv2_integration.auth_integration.id}"
 }
 
-# Routes — Files (Protected by Cognito JWT Authorizer)
+resource "aws_apigatewayv2_route" "auth_recovery_info" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "POST /api/auth/recovery-info"
+  target    = "integrations/${aws_apigatewayv2_integration.auth_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "auth_reset_password" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "POST /api/auth/reset-password"
+  target    = "integrations/${aws_apigatewayv2_integration.auth_integration.id}"
+}
+
+# Routes — Files (Protected by Lambda Authorizer)
 resource "aws_apigatewayv2_route" "files_upload_url" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "POST /api/files/upload-url"
   target             = "integrations/${aws_apigatewayv2_integration.files_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "files_confirm" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "POST /api/files/confirm"
   target             = "integrations/${aws_apigatewayv2_integration.files_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "files_list" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "GET /api/files"
   target             = "integrations/${aws_apigatewayv2_integration.files_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "files_download_url" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "GET /api/files/{fileId}/download-url"
   target             = "integrations/${aws_apigatewayv2_integration.files_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "files_delete" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "DELETE /api/files/{fileId}"
   target             = "integrations/${aws_apigatewayv2_integration.files_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
-# Routes — Folders (Protected by Cognito JWT Authorizer)
+# Routes — Folders (Protected)
 resource "aws_apigatewayv2_route" "folders_create" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "POST /api/folders"
   target             = "integrations/${aws_apigatewayv2_integration.folders_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "folders_delete" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "DELETE /api/folders/{folderId}"
   target             = "integrations/${aws_apigatewayv2_integration.folders_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
-# Routes — Sharing (Protected by Cognito JWT Authorizer)
+# Routes — Sharing (Protected)
 resource "aws_apigatewayv2_route" "sharing_add" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "POST /api/files/{fileId}/share"
   target             = "integrations/${aws_apigatewayv2_integration.sharing_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "sharing_revoke" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "DELETE /api/files/{fileId}/share/{recipientEmail}"
   target             = "integrations/${aws_apigatewayv2_integration.sharing_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 resource "aws_apigatewayv2_route" "sharing_list" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "GET /api/files/shared-with-me"
   target             = "integrations/${aws_apigatewayv2_integration.sharing_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
-# Routes — Quota (Protected by Cognito JWT Authorizer)
+# Routes — Quota (Protected)
 resource "aws_apigatewayv2_route" "quota_get" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "GET /api/user/quota"
   target             = "integrations/${aws_apigatewayv2_integration.quota_integration.id}"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt_authorizer.id
-  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
 }
 
 # Default Auto-Deploy Stage
@@ -313,13 +343,13 @@ resource "aws_apigatewayv2_stage" "default_stage" {
   auto_deploy = true
 }
 
-# Lambda Permissions for API Gateway
+# Lambda Permissions — use execution_arn (data-plane), not arn (control-plane)
 resource "aws_lambda_permission" "api_gw_auth" {
   statement_id  = "AllowExecutionFromAPIGatewayAuth"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.auth_lambda.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }
 
 resource "aws_lambda_permission" "api_gw_files" {
@@ -327,7 +357,7 @@ resource "aws_lambda_permission" "api_gw_files" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.files_lambda.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }
 
 resource "aws_lambda_permission" "api_gw_folders" {
@@ -335,7 +365,7 @@ resource "aws_lambda_permission" "api_gw_folders" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.folders_lambda.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }
 
 resource "aws_lambda_permission" "api_gw_sharing" {
@@ -343,7 +373,7 @@ resource "aws_lambda_permission" "api_gw_sharing" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.sharing_lambda.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }
 
 resource "aws_lambda_permission" "api_gw_quota" {
@@ -351,5 +381,13 @@ resource "aws_lambda_permission" "api_gw_quota" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.quota_lambda.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "api_gw_authorizer" {
+  statement_id  = "AllowExecutionFromAPIGatewayAuthorizer"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.authorizer_lambda.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }

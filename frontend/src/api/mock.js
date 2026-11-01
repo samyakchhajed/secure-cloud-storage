@@ -1,10 +1,26 @@
 /**
  * Mock API Adapter for Secure Cloud Storage
  *
- * Provides a complete offline simulation of Cognito authentication,
- * DynamoDB single-table metadata, S3 presigned transfers, folder trees,
- * multi-user sharing, and storage quota tracking with realistic delays.
+ * Provides a complete offline simulation of DynamoDB-backed user authentication,
+ * Zero-Knowledge client-side encryption with recovery key rotation,
+ * S3 presigned transfers, folder trees, multi-user sharing, and storage quota tracking.
  */
+
+import {
+  generateRandomBytes,
+  bytesToBase64,
+  generateRecoveryKey,
+  generateMfk,
+  exportMfk,
+  importMfk,
+  deriveKeyFromPassword,
+  deriveKeyFromRecoveryKey,
+  wrapKey,
+  unwrapKey,
+  encryptBinary,
+  decryptBinary,
+  hashPassword
+} from '../crypto.js';
 
 const STORAGE_KEY_PREFIX = 'scs_mock_';
 const delay = (ms = 180) => new Promise(resolve => setTimeout(resolve, ms));
@@ -27,10 +43,33 @@ function saveState(key, val) {
   }
 }
 
+// In-memory binary storage for uploaded encrypted files
+const mockBlobStorage = new Map();
+
 // Initial Seed Data
 const initialUsers = [
-  { id: 'user_001', email: 'alice@example.com', password: 'Password123!', verified: true },
-  { id: 'user_002', email: 'bob@example.com', password: 'Password123!', verified: true }
+  {
+    id: 'user_001',
+    email: 'alice@example.com',
+    password: 'Password123!',
+    passwordSalt: 'YWxpY2Vfc2FsdF8xMjM0',
+    passwordHash: '',
+    wrappedMfkByPassword: '',
+    wrappedMfkByRecovery: '',
+    recoveryKey: 'ALIC-E901-RECO-VERY-KEY9-DEMO',
+    verified: true
+  },
+  {
+    id: 'user_002',
+    email: 'bob@example.com',
+    password: 'Password123!',
+    passwordSalt: 'Ym9iX3NhbHRfMTIzNDU2',
+    passwordHash: '',
+    wrappedMfkByPassword: '',
+    wrappedMfkByRecovery: '',
+    recoveryKey: 'BOB2-2026-RECO-VERY-KEY9-DEMO',
+    verified: true
+  }
 ];
 
 const initialFolders = [
@@ -42,9 +81,9 @@ const initialFiles = [
   {
     id: 'file_001',
     userId: 'user_001',
-    name: 'AWS_Security_Whitepaper.pdf',
-    sizeBytes: 1420500,
-    contentType: 'application/pdf',
+    name: 'AWS_Security_Whitepaper.txt',
+    sizeBytes: 1024,
+    contentType: 'text/plain',
     folderId: 'folder_doc',
     createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
     shares: ['bob@example.com']
@@ -52,9 +91,9 @@ const initialFiles = [
   {
     id: 'file_002',
     userId: 'user_001',
-    name: 'Architecture_Blueprint.png',
-    sizeBytes: 2890400,
-    contentType: 'image/png',
+    name: 'Architecture_Blueprint.txt',
+    sizeBytes: 2048,
+    contentType: 'text/plain',
     folderId: 'folder_img',
     createdAt: new Date(Date.now() - 86400000 * 1).toISOString(),
     shares: []
@@ -62,9 +101,9 @@ const initialFiles = [
   {
     id: 'file_003',
     userId: 'user_001',
-    name: 'Storage_Cost_Optimization_2026.xlsx',
-    sizeBytes: 854000,
-    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    name: 'Storage_Cost_Optimization_2026.txt',
+    sizeBytes: 850,
+    contentType: 'text/plain',
     folderId: null,
     createdAt: new Date().toISOString(),
     shares: []
@@ -74,71 +113,156 @@ const initialFiles = [
 let users = loadState('users', initialUsers);
 let folders = loadState('folders', initialFolders);
 let files = loadState('files', initialFiles);
-let pendingSignups = loadState('pending_signups', {});
 
 // Active Session
-let currentSession = loadState('session', {
-  userId: 'user_001',
-  email: 'alice@example.com',
-  token: 'mock_jwt_token_alice_001'
-});
+let currentSession = loadState('session', null);
+
+/**
+ * Ensures user has valid Zero-Knowledge wrapped MFKs initialized.
+ */
+async function ensureUserMfk(user) {
+  if (user.wrappedMfkByPassword && user.wrappedMfkByRecovery) {
+    return;
+  }
+  const salt = user.passwordSalt || bytesToBase64(generateRandomBytes(16));
+  user.passwordSalt = salt;
+
+  if (!user.passwordHash) {
+    user.passwordHash = await hashPassword(user.password || 'Password123!', salt);
+  }
+
+  const mfkKey = await generateMfk();
+  const rawMfk = await exportMfk(mfkKey);
+
+  const pwWrapKey = await deriveKeyFromPassword(user.password || 'Password123!', salt);
+  user.wrappedMfkByPassword = await wrapKey(rawMfk, pwWrapKey);
+
+  const recKey = user.recoveryKey || generateRecoveryKey();
+  user.recoveryKey = recKey;
+  const recWrapKey = await deriveKeyFromRecoveryKey(recKey, salt);
+  user.wrappedMfkByRecovery = await wrapKey(rawMfk, recWrapKey);
+
+  saveState('users', users);
+}
 
 export const mockApi = {
   // Auth
-  async register(email, password) {
+  async register(email, password, zkParams = null) {
     await delay(250);
     const existing = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (existing && existing.verified) {
+    if (existing) {
       throw new Error('An account with this email already exists.');
     }
 
-    const otp = '123456'; // Standard mock OTP
-    pendingSignups[email.toLowerCase()] = { email, password, otp, createdAt: Date.now() };
-    saveState('pending_signups', pendingSignups);
+    const salt = zkParams?.passwordSalt || bytesToBase64(generateRandomBytes(16));
+    const pwHash = zkParams?.passwordHash || await hashPassword(password, salt);
+    let wrappedPw = zkParams?.wrappedMfkPassword || '';
+    let wrappedRec = zkParams?.wrappedMfkRecovery || '';
+    let recoveryKey = zkParams?.recoveryKey || '';
 
-    return {
-      message: 'Signup initiated. A 6-digit verification code has been sent (Mock OTP: 123456).',
-      email
-    };
-  },
+    if (!wrappedPw || !wrappedRec) {
+      const mfk = await generateMfk();
+      const rawMfk = await exportMfk(mfk);
+      const pwKey = await deriveKeyFromPassword(password, salt);
+      wrappedPw = await wrapKey(rawMfk, pwKey);
 
-  async verifyOtp(email, code) {
-    await delay(200);
-    const pending = pendingSignups[email.toLowerCase()];
-    if (!pending || pending.otp !== code.trim()) {
-      throw new Error('Invalid or expired verification code. Use 123456 for mock.');
+      if (!recoveryKey) recoveryKey = generateRecoveryKey();
+      const recKey = await deriveKeyFromRecoveryKey(recoveryKey, salt);
+      wrappedRec = await wrapKey(rawMfk, recKey);
     }
 
     const newUser = {
       id: 'user_' + Math.random().toString(36).substring(2, 9),
-      email: pending.email,
-      password: pending.password,
+      email,
+      password,
+      passwordSalt: salt,
+      passwordHash: pwHash,
+      wrappedMfkByPassword: wrappedPw,
+      wrappedMfkByRecovery: wrappedRec,
+      recoveryKey,
       verified: true
     };
 
     users.push(newUser);
-    delete pendingSignups[email.toLowerCase()];
     saveState('users', users);
-    saveState('pending_signups', pendingSignups);
 
-    return { verified: true, message: 'Email verified successfully. You can now log in.' };
+    return {
+      message: 'Account created successfully! You can now log in.',
+      userId: newUser.id,
+      email,
+      recoveryKey
+    };
   },
 
   async login(email, password) {
     await delay(220);
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
+    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
     if (!user) {
-      throw new Error('Invalid email or password.');
+      throw new Error('Incorrect email or password.');
+    }
+
+    await ensureUserMfk(user);
+
+    // Verify password: check passwordHash or plain password match
+    let isValid = false;
+    if (user.password === password) {
+      isValid = true;
+    } else if (user.passwordHash) {
+      const computedHash = await hashPassword(password, user.passwordSalt);
+      isValid = (computedHash === user.passwordHash || password === user.passwordHash);
+    }
+
+    if (!isValid) {
+      throw new Error('Incorrect email or password.');
     }
 
     currentSession = {
       userId: user.id,
       email: user.email,
-      token: 'mock_jwt_' + user.id + '_' + Date.now()
+      token: 'mock_jwt_' + user.id + '_' + Date.now(),
+      passwordSalt: user.passwordSalt,
+      wrappedMfkByPassword: user.wrappedMfkByPassword
     };
     saveState('session', currentSession);
 
     return currentSession;
+  },
+
+  async getRecoveryInfo(email) {
+    await delay(200);
+    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (!user) {
+      throw new Error('User not found.');
+    }
+    await ensureUserMfk(user);
+    return {
+      userId: user.id,
+      passwordSalt: user.passwordSalt,
+      wrappedMfkByRecovery: user.wrappedMfkByRecovery
+    };
+  },
+
+  async resetPassword(email, resetParams) {
+    await delay(250);
+    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (!user) {
+      throw new Error('User not found.');
+    }
+
+    user.passwordHash = resetParams.newPasswordHash;
+    user.passwordSalt = resetParams.newPasswordSalt;
+    user.wrappedMfkByPassword = resetParams.newWrappedMfkPassword;
+    user.wrappedMfkByRecovery = resetParams.newWrappedMfkRecovery;
+    if (resetParams.newPassword) {
+      user.password = resetParams.newPassword;
+    }
+
+    saveState('users', users);
+    return {
+      message: 'Password reset successful. You can now log in.',
+      userId: user.id,
+      email: user.email
+    };
   },
 
   async logout() {
@@ -150,6 +274,11 @@ export const mockApi = {
 
   getCurrentSession() {
     return currentSession;
+  },
+
+  saveCurrentSession(session) {
+    currentSession = session;
+    saveState('session', session);
   },
 
   // Quota
@@ -221,7 +350,6 @@ export const mockApi = {
     await delay(180);
     if (!currentSession) throw new Error('Unauthorized');
 
-    // Check if folder has child folders or files
     const hasFiles = files.some(f => f.folderId === folderId && f.userId === currentSession.userId);
     const hasSubfolders = folders.some(f => f.parentFolderId === folderId && f.userId === currentSession.userId);
 
@@ -235,11 +363,10 @@ export const mockApi = {
   },
 
   // Upload workflow (Presign -> Direct PUT -> Confirm)
-  async getUploadUrl(fileName, sizeBytes, contentType, folderId = null) {
+  async getUploadUrl(fileName, sizeBytes, contentType, folderId = null, originalContentType = '') {
     await delay(150);
     if (!currentSession) throw new Error('Unauthorized');
 
-    // Quota validation
     const quota = await this.getQuota();
     if (quota.usedBytes + sizeBytes > quota.quotaBytes) {
       throw new Error(`Storage quota exceeded. Available: ${((quota.quotaBytes - quota.usedBytes) / 1024 / 1024).toFixed(1)} MB.`);
@@ -254,6 +381,7 @@ export const mockApi = {
       fileName,
       sizeBytes,
       contentType: contentType || 'application/octet-stream',
+      originalContentType: originalContentType || 'application/octet-stream',
       folderId: folderId || null,
       presignedUrl: `mock://s3-private-bucket/objects/${currentSession.userId}/${fileId}/${encodeURIComponent(fileName)}`,
       expiresInSeconds: 300,
@@ -263,19 +391,20 @@ export const mockApi = {
     };
   },
 
-  async uploadDirect(uploadTicket, fileBlob, onProgress) {
-    // Simulate real upload chunks with progress updates
-    const totalSteps = 10;
+  async uploadDirect(uploadTicket, encryptedBlob, onProgress) {
+    const totalSteps = 8;
     for (let i = 1; i <= totalSteps; i++) {
-      await delay(40);
+      await delay(30);
       if (onProgress) {
         onProgress(Math.round((i / totalSteps) * 100));
       }
     }
+    // Store encrypted blob in memory for subsequent downloads
+    mockBlobStorage.set(uploadTicket.fileId, encryptedBlob);
     return { success: true };
   },
 
-  async confirmUpload(uploadTicket) {
+  async confirmUpload(uploadTicket, extra = {}) {
     await delay(140);
     if (!currentSession) throw new Error('Unauthorized');
 
@@ -284,7 +413,7 @@ export const mockApi = {
       userId: currentSession.userId,
       name: uploadTicket.fileName,
       sizeBytes: uploadTicket.sizeBytes,
-      contentType: uploadTicket.contentType,
+      contentType: extra.originalContentType || uploadTicket.originalContentType || uploadTicket.contentType,
       folderId: uploadTicket.folderId,
       createdAt: new Date().toISOString(),
       shares: []
@@ -295,7 +424,7 @@ export const mockApi = {
     return newFile;
   },
 
-  // Download workflow (Presign GET)
+  // Download workflow (Presign GET -> Decrypt)
   async getDownloadUrl(fileId) {
     await delay(150);
     if (!currentSession) throw new Error('Unauthorized');
@@ -310,14 +439,30 @@ export const mockApi = {
       throw new Error('Access denied: You do not have permission to view or download this file.');
     }
 
-    // Generate mock downloadable data blob
-    const mockContent = `Secure Cloud Storage File: ${file.name}\nSize: ${file.sizeBytes} bytes\nOwner ID: ${file.userId}\nDownloaded At: ${new Date().toISOString()}`;
-    const blob = new Blob([mockContent], { type: file.contentType || 'text/plain' });
-    const downloadUrl = URL.createObjectURL(blob);
+    let downloadBlob;
+    if (mockBlobStorage.has(file.id)) {
+      downloadBlob = mockBlobStorage.get(file.id);
+    } else {
+      // Create seed file encrypted content using active session MFK
+      const plainText = `Secure Cloud Storage Encrypted File: ${file.name}\nSize: ${file.sizeBytes} bytes\nOwner: ${file.userId}\nDecrypted securely in client memory.`;
+      const enc = new TextEncoder();
+      const plainBytes = enc.encode(plainText);
+
+      if (currentSession && currentSession.mfk) {
+        const mfkKey = await importMfk(currentSession.mfk);
+        const encBuffer = await encryptBinary(plainBytes.buffer, mfkKey);
+        downloadBlob = new Blob([encBuffer], { type: 'application/octet-stream' });
+      } else {
+        downloadBlob = new Blob([plainBytes], { type: file.contentType || 'text/plain' });
+      }
+    }
+
+    const downloadUrl = URL.createObjectURL(downloadBlob);
 
     return {
       fileId: file.id,
       fileName: file.name,
+      contentType: file.contentType || 'application/octet-stream',
       downloadUrl,
       expiresInSeconds: 300
     };
@@ -334,6 +479,7 @@ export const mockApi = {
     }
 
     files = files.filter(f => f.id !== fileId);
+    mockBlobStorage.delete(fileId);
     saveState('files', files);
     return { success: true };
   },

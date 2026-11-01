@@ -11,7 +11,15 @@ terraform {
       source  = "hashicorp/archive"
       version = "~> 2.4"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
+
+  # Remote state backend — configured dynamically during terraform init
+  # via -backend-config flags in GitHub Actions / CLI (zero hardcoded bucket names)
+  backend "s3" {}
 }
 
 provider "aws" {
@@ -42,34 +50,31 @@ module "database" {
   environment = var.environment
 }
 
-# 3. Cognito Module (User Pool & App Client)
-module "cognito" {
-  source      = "./modules/cognito"
-  environment = var.environment
-}
-
-# 4. IAM Module (Least-Privilege Execution Role)
+# 3. IAM Module (Least-Privilege Execution Role)
 module "iam" {
-  source                = "./modules/iam"
-  environment           = var.environment
-  dynamodb_table_arn    = module.database.table_arn
-  s3_bucket_arn         = module.storage.bucket_arn
-  cognito_user_pool_arn = module.cognito.user_pool_arn
+  source             = "./modules/iam"
+  environment        = var.environment
+  dynamodb_table_arn = module.database.table_arn
+  s3_bucket_arn      = module.storage.bucket_arn
 }
 
-# 5. Compute Module (Lambda Functions + HTTP API Gateway v2 + JWT Authorizer)
+# Auto-generate cryptographically secure HMAC secret for JWT signing & verification
+resource "random_password" "jwt_secret" {
+  length  = 64
+  special = false
+}
+
+# 4. Compute Module (Lambda Functions + HTTP API Gateway v2 + Lambda Authorizer)
 module "compute" {
-  source                     = "./modules/compute"
-  environment                = var.environment
-  lambda_role_arn            = module.iam.lambda_role_arn
-  dynamodb_table_name        = module.database.table_name
-  s3_bucket_name             = module.storage.bucket_name
-  cognito_user_pool_id       = module.cognito.user_pool_id
-  cognito_user_pool_endpoint = module.cognito.user_pool_endpoint
-  cognito_client_id          = module.cognito.client_id
+  source              = "./modules/compute"
+  environment         = var.environment
+  lambda_role_arn     = module.iam.lambda_role_arn
+  dynamodb_table_name = module.database.table_name
+  s3_bucket_name      = module.storage.bucket_name
+  jwt_secret          = random_password.jwt_secret.result
 }
 
-# 6. Frontend Module (S3 Static Hosting + CloudFront CDN OAC)
+# 5. Frontend Module (S3 Static Hosting)
 module "frontend" {
   source      = "./modules/frontend"
   environment = var.environment

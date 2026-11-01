@@ -18,17 +18,8 @@ variable "s3_bucket_name" {
   description = "Name of the private files S3 bucket"
 }
 
-variable "cognito_user_pool_id" {
+variable "jwt_secret" {
   type        = string
-  description = "ID of the Cognito User Pool"
-}
-
-variable "cognito_user_pool_endpoint" {
-  type        = string
-  description = "Endpoint of the Cognito User Pool"
-}
-
-variable "cognito_client_id" {
-  type        = string
-  description = "ID of the Cognito App Client"
+  description = "HMAC secret key for signing and verifying custom JWTs"
+  sensitive   = true
 }
