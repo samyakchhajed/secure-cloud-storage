@@ -287,7 +287,7 @@ export const mockApi = {
     if (!currentSession) throw new Error('Unauthorized');
     const userFiles = files.filter(f => f.userId === currentSession.userId);
     const usedBytes = userFiles.reduce((acc, f) => acc + (f.sizeBytes || 0), 0);
-    const quotaBytes = 1073741824; // 1 GB default
+    const quotaBytes = 5 * 1024 * 1024 * 1024; // 5 GB default
 
     return {
       userId: currentSession.userId,

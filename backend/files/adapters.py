@@ -75,15 +75,18 @@ class DynamoDBFilesAdapter:
         )
         item = resp.get('Item')
         if not item:
-            # Default profile: 1 GB quota
+            # Default profile: 5 GB quota
             return {
                 'userId': user_id,
-                'quotaBytes': 1073741824,
+                'quotaBytes': 5 * 1024 * 1024 * 1024,
                 'usedBytes': 0
             }
         return {
             'userId': user_id,
-            'quotaBytes': int(item.get('quotaBytes', 1073741824)),
+            'quotaBytes': max(
+                int(item.get('quotaBytes', 5 * 1024 * 1024 * 1024)),
+                5 * 1024 * 1024 * 1024
+            ),
             'usedBytes': int(item.get('usedBytes', 0))
         }
 
@@ -123,7 +126,7 @@ class DynamoDBFilesAdapter:
             UpdateExpression='ADD usedBytes :size SET quotaBytes = if_not_exists(quotaBytes, :defaultQuota)',
             ExpressionAttributeValues={
                 ':size': size_bytes,
-                ':defaultQuota': 1073741824
+                ':defaultQuota': 5 * 1024 * 1024 * 1024
             }
         )
 

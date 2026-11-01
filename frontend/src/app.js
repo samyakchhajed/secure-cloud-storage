@@ -95,7 +95,7 @@ const state = {
   folders: [],
   files: [],
   sharedFiles: [],
-  quota: { usedBytes: 0, quotaBytes: 1073741824, percentage: 0 },
+  quota: { usedBytes: 0, quotaBytes: 5 * 1024 * 1024 * 1024, percentage: 0 },
   activeModal: null, // null | 'upload' | 'create_folder' | 'share' | 'recovery_key' | 'security_info'
   selectedFileForShare: null,
   isUploading: false,

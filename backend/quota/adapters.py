@@ -20,7 +20,10 @@ class DynamoDBQuotaAdapter:
         )
         item = resp.get('Item') or {}
         return {
-            'quotaBytes': int(item.get('quotaBytes', 1073741824)),
+            'quotaBytes': max(
+                int(item.get('quotaBytes', 5 * 1024 * 1024 * 1024)),
+                5 * 1024 * 1024 * 1024
+            ),
             'usedBytes': int(item.get('usedBytes', 0))
         }
 
