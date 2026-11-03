@@ -28,7 +28,7 @@ The application was engineered across four systematic phases, ensuring strict ar
 └──────────────────────────────┬──────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
-│  Phase 4: Keyless CI/CD & 22-Run Hardening Phase            │
+│  Phase 4: Keyless CI/CD & 25-Run Hardening Phase            │
 │  • GitHub Actions OIDC integration (AWS STS WebIdentity)    │
 │  • Deep debugging of OIDC claims, state, and permissions    │
 └─────────────────────────────────────────────────────────────┘
@@ -78,39 +78,15 @@ The application was engineered across four systematic phases, ensuring strict ar
 
 **Goal:** Automate cloud provisioning and deployment with modern, keyless security via GitHub Actions OpenID Connect (OIDC).
 
-### 1. IAM User Bootstrap Policy
-To bootstrap the AWS account without granting root-level permissions, an initial IAM policy was attached to the administrator IAM user allowing management of the OIDC Identity Provider and CI/CD roles:
+### 1. GitHub Actions Role Trust Policy
+The deployment and destroy workflows assume a dedicated IAM role through GitHub Actions OIDC. The trust policy is attached to that role, not to an IAM user. It permits only this repository's `main` branch, using the immutable account and repository IDs present in the GitHub OIDC subject:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateOpenIDConnectProvider",
-        "iam:GetOpenIDConnectProvider",
-        "iam:CreateRole",
-        "iam:AttachRolePolicy",
-        "iam:PutRolePolicy",
-        "iam:GetRole"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-### 2. OIDC Identity Provider Configuration
-* **Provider URL:** `https://token.actions.githubusercontent.com`
-* **Audience:** `sts.amazonaws.com`
-
-### 3. Repository-Scoped OIDC Trust Policy
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
+      "Sid": "GitHubOIDCAuth",
       "Effect": "Allow",
       "Principal": {
         "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
@@ -121,10 +97,8 @@ To bootstrap the AWS account without granting root-level permissions, an initial
       ],
       "Condition": {
         "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:samyakchhajed@<USER_ID>/secure-cloud-storage@<REPO_ID>:*"
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:samyakchhajed@<USER_ID>/secure-cloud-storage@<REPO_ID>:ref:refs/heads/main"
         }
       }
     }
@@ -132,40 +106,40 @@ To bootstrap the AWS account without granting root-level permissions, an initial
 }
 ```
 
-### 4. CI/CD Role Permissions Policy
+### 2. CI/CD Role Permissions Policy
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "TerraformStateAndArtifactsStorage",
+      "Sid": "CreateProjectBuckets",
+      "Effect": "Allow",
+      "Action": "s3:CreateBucket",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ProjectBucketManagement",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::scs-files-*",
+        "arn:aws:s3:::scs-frontend-*",
+        "arn:aws:s3:::scs-tfstate-*"
+      ]
+    },
+    {
+      "Sid": "ProjectBucketObjects",
       "Effect": "Allow",
       "Action": [
-        "s3:CreateBucket",
-        "s3:DeleteBucket",
-        "s3:ListBucket",
-        "s3:GetBucketLocation",
         "s3:GetObject",
         "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:PutBucketPolicy",
-        "s3:GetBucketPolicy",
-        "s3:DeleteBucketPolicy",
-        "s3:PutBucketVersioning",
-        "s3:GetBucketVersioning",
-        "s3:PutBucketPublicAccessBlock",
-        "s3:GetBucketPublicAccessBlock",
-        "s3:PutBucketCors",
-        "s3:GetBucketCors",
-        "s3:PutBucketWebsite",
-        "s3:GetBucketWebsite",
-        "s3:DeleteBucketWebsite",
-        "s3:PutEncryptionConfiguration",
-        "s3:GetEncryptionConfiguration",
-        "s3:PutBucketTagging",
-        "s3:GetBucketTagging"
+        "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::*"
+      "Resource": [
+        "arn:aws:s3:::scs-files-*/*",
+        "arn:aws:s3:::scs-frontend-*/*",
+        "arn:aws:s3:::scs-tfstate-*/*"
+      ]
     },
     {
       "Sid": "DynamoDBManagement",
@@ -181,25 +155,20 @@ To bootstrap the AWS account without granting root-level permissions, an initial
         "dynamodb:UntagResource",
         "dynamodb:ListTagsOfResource"
       ],
-      "Resource": "arn:aws:dynamodb:ap-south-1:<ACCOUNT_ID>:table/*"
+      "Resource": [
+        "arn:aws:dynamodb:ap-south-1:<ACCOUNT_ID>:table/scs-metadata-*",
+        "arn:aws:dynamodb:ap-south-1:<ACCOUNT_ID>:table/scs-tfstate-lock"
+      ]
     },
     {
-      "Sid": "CognitoUserPoolManagement",
+      "Sid": "TerraformStateLocking",
       "Effect": "Allow",
       "Action": [
-        "cognito-idp:CreateUserPool",
-        "cognito-idp:DeleteUserPool",
-        "cognito-idp:DescribeUserPool",
-        "cognito-idp:UpdateUserPool",
-        "cognito-idp:CreateUserPoolClient",
-        "cognito-idp:DeleteUserPoolClient",
-        "cognito-idp:DescribeUserPoolClient",
-        "cognito-idp:UpdateUserPoolClient",
-        "cognito-idp:TagResource",
-        "cognito-idp:UntagResource",
-        "cognito-idp:ListTagsForResource"
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:dynamodb:ap-south-1:<ACCOUNT_ID>:table/scs-tfstate-lock"
     },
     {
       "Sid": "LambdaFunctionManagement",
@@ -220,14 +189,12 @@ To bootstrap the AWS account without granting root-level permissions, an initial
         "lambda:UntagResource",
         "lambda:ListTags"
       ],
-      "Resource": "arn:aws:lambda:ap-south-1:<ACCOUNT_ID>:function:*"
+      "Resource": "arn:aws:lambda:ap-south-1:<ACCOUNT_ID>:function:scs-*"
     },
     {
       "Sid": "APIGatewayManagement",
       "Effect": "Allow",
-      "Action": [
-        "apigateway:*"
-      ],
+      "Action": "apigateway:*",
       "Resource": "*"
     },
     {
@@ -243,10 +210,10 @@ To bootstrap the AWS account without granting root-level permissions, an initial
         "logs:TagResource",
         "logs:UntagResource"
       ],
-      "Resource": "arn:aws:logs:ap-south-1:<ACCOUNT_ID>:log-group:*"
+      "Resource": "arn:aws:logs:ap-south-1:<ACCOUNT_ID>:log-group:/aws/lambda/scs-*"
     },
     {
-      "Sid": "IAMRoleAndPolicyManagement",
+      "Sid": "ProjectIAMRoleManagement",
       "Effect": "Allow",
       "Action": [
         "iam:CreateRole",
@@ -259,7 +226,14 @@ To bootstrap the AWS account without granting root-level permissions, an initial
         "iam:DeleteRolePolicy",
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
-        "iam:TagRole",
+        "iam:TagRole"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/scs-*"
+    },
+    {
+      "Sid": "ProjectIAMPolicyManagement",
+      "Effect": "Allow",
+      "Action": [
         "iam:CreatePolicy",
         "iam:GetPolicy",
         "iam:GetPolicyVersion",
@@ -269,21 +243,35 @@ To bootstrap the AWS account without granting root-level permissions, an initial
         "iam:ListPolicyVersions",
         "iam:TagPolicy"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:policy/scs-*"
     },
     {
       "Sid": "IAMPassRoleForLambda",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "*"
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/scs-lambda-role-*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
     }
   ]
 }
 ```
 
+`s3:CreateBucket` requires `Resource: "*"`, because Amazon S3 does not support
+resource-level permissions for bucket creation. API Gateway management also uses
+`Resource: "*"` because Terraform tagging invokes the `/tags/...` control-plane
+resource, which is not covered by an `/apis/*` resource pattern. All subsequent
+S3 bucket and object operations are restricted to the project's `scs-*` bucket
+names. `iam:PassRole` is restricted to the Lambda execution role and includes
+`iam:PassedToService = lambda.amazonaws.com`; it does not allow the CI/CD role
+to pass arbitrary IAM roles to arbitrary AWS services.
+
 ---
 
-## 6. The 22-Run Hardening Phase: Troubleshooting & Discovery Log
+## 6. The 25-Run Hardening Phase: Troubleshooting & Discovery Log
 
 During automated CI/CD setup and cloud execution, the system went through a rigorous 22-run diagnostic and hardening phase:
 
@@ -310,7 +298,7 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
     }
     ```
   * Because standard AWS guides match `repo:<user>/<repo>:*`, STS string matching failed every single time due to the inserted `@IDs`.
-  * **Resolution:** Scoped the IAM trust policy condition to `repo:samyakchhajed@<USER_ID>/secure-cloud-storage@<REPO_ID>:*`, and OIDC authentication succeeded immediately.
+  * **Resolution:** Scoped the IAM trust policy condition to the exact `main` branch subject, `repo:samyakchhajed@<USER_ID>/secure-cloud-storage@<REPO_ID>:ref:refs/heads/main`, and OIDC authentication succeeded immediately.
 
 ---
 
@@ -332,8 +320,8 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
 
 * **Runs 17–19 (The 10+ Minute PassRole Retry Loop)**:
   * Terraform hung on `aws_lambda_function: Still creating...` for over 10 minutes before timing out.
-  * **Root Cause:** `iam:PassRole` in the role permissions policy had an overly restrictive condition (`iam:PassedToService: lambda.amazonaws.com`). During function creation, Terraform's provider failed evaluating the role pass condition and entered an internal 15-minute retry loop.
-  * **Resolution:** Removed the condition to allow unconditional `iam:PassRole` for Lambda. *(Note: this widens PassRole beyond least-privilege; the correct fix (retry/backoff handling for IAM eventual consistency) is deferred to the ML platform.)*
+  * **Historical finding:** An earlier policy version combined `iam:PassRole` with `iam:PassedToService: lambda.amazonaws.com`; the deployment then entered a retry loop while IAM changes propagated. This was an IAM eventual-consistency/deployment-order issue, not a reason to grant unrestricted role passing.
+  * **Final hardening:** The documented policy keeps `iam:PassedToService: lambda.amazonaws.com` and scopes `iam:PassRole` to `arn:aws:iam::<ACCOUNT_ID>:role/scs-lambda-role-*`. Terraform must wait for the execution role and its policy attachments to become available before creating Lambda functions.
 * **Run 20 (100% Complete Infrastructure Deployment Success)**:
   * **The deployed Terraform stack provisions the active resources**: private S3 storage, DynamoDB single-table metadata, six Python 3.12 Lambdas, HTTP API Gateway v2 with 15 routes and a custom Lambda authorizer, and direct S3 static website hosting. The initial Cognito attempt is not part of the deployed stack because the account quota was zero.
   * Runtime API endpoint automatically injected into `frontend/config.js`.
@@ -341,7 +329,7 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
 
 ---
 
-### Stage 4: Runtime Diagnostics & Hardening Discoveries (Runs 21–22)
+### Stage 4: Runtime Diagnostics & Hardening Discoveries (Runs 21–25)
 
 * **Run 21 (Cognito Quota and Authentication Design Review)**:
   * The initial Cognito attempt could not be used because the account's Cognito quota was zero.
@@ -351,6 +339,21 @@ During automated CI/CD setup and cloud execution, the system went through a rigo
   * Testing user login returned `500 {"message":"Internal Server Error"}` with **zero CloudWatch logs** in Lambda.
   * **Root Cause Diagnosed:** In `terraform/modules/compute/main.tf`, the Lambda invocation permission `source_arn` was pointed to the API Gateway control-plane ARN (`${aws_apigatewayv2_api.http_api.arn}/*/*` -> `arn:aws:apigateway:...`). At runtime, API Gateway invokes Lambda using its data-plane execution ARN (`arn:aws:execute-api:...`). Because the ARNs did not match, AWS Lambda denied the invocation at the perimeter before Python code ever started, generating an API Gateway 500 with zero CloudWatch logs.
   * **Strategic Decision:** Rather than continuing iterative file updates and manual AWS console cleanups on SCS after 22 runs, these vital architectural findings (`execution_arn` data-plane wiring, Cognito client IAM syntax, and persistent S3 `.tfstate` backends) were documented as key engineering discoveries and deferred for direct implementation in the **ML Model & Deployment Comparison** platform.
+* **Run 23 (Missing Explicit Service Actions)**:
+  * Deployment policy evaluation reported missing `apigateway:POST` and `s3:GetBucketAcl` permissions.
+  * Added `s3:GetBucketAcl` to the project bucket permissions and broadened the API Gateway management resource to `*` after confirming that the `apigateway:POST` request targeted `/tags/...`, outside the previous `/apis/*` resource pattern.
+* **Run 24 (S3 Transfer Configuration Read Permission)**:
+  * The attempted `s3:GetBucketAccelerateConfiguration` entry was rejected because it is not a valid IAM action.
+  * Replaced the manually enumerated project bucket actions with `s3:*`, while retaining the `scs-*` bucket resource restriction.
+* **Run 25 (Successful Deployment and S3 Region Mismatch)**:
+  * Infrastructure deployment completed successfully, but registration did not display a recovery key and direct S3 uploads failed.
+  * The presigned upload URL was signed for `ap-south-1`, while the target S3 bucket reported `us-east-1`, causing `AuthorizationQueryParametersError`.
+  * The files adapter now reads the bucket's actual location before generating presigned URLs, and the Lambda execution role has scoped `s3:GetBucketLocation` access. The frontend also reports missing recovery-key generation and includes the S3 response body in upload errors.
+* **Post-Run 25 Cloud Verification (Current Status)**:
+  * The updated changes were pushed to GitHub and the infrastructure deployment was proven successful.
+  * With a new account, the deployed frontend still does not display the recovery key after registration, and uploads still fail during the direct browser-to-S3 flow.
+  * The local mock flow and infrastructure deployment are therefore considered complete milestones, but live end-to-end CRUD is not yet verified. Download/decryption, quota updates, folder operations, and sharing operations remain unverified because upload does not complete.
+  * This project is being recorded as a successful cloud deployment and hardening project rather than as a fully validated production CRUD application.
 
 ---
 

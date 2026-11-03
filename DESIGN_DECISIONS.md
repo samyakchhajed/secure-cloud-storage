@@ -92,6 +92,11 @@ This document records every significant architectural, security, and engineering
 - **Rejected:** Relying on ephemeral local runner state across GitHub Actions runs.
 - **Rationale:** GitHub Actions runners are ephemeral virtual machines that discard local state upon job completion. Storing state in an S3 remote backend eliminates state drift, avoids resource recreation collisions, and enables 15-second in-place infrastructure updates.
 
+### Decision: Record Infrastructure Success Separately from Live CRUD Readiness
+- **Chosen:** Treat successful Terraform/GitHub Actions deployment and successful live application CRUD as separate milestones.
+- **Current result:** The infrastructure deployment succeeded, but the deployed frontend has not yet passed recovery-key display and direct S3 upload verification. Consequently, download/decryption, quota, folder, and sharing flows are documented as unverified rather than represented as cloud-complete.
+- **Rationale:** A successful control-plane deployment does not prove that browser cryptography, API responses, CORS, presigned URLs, and S3 confirmation work together at runtime. Recording this boundary keeps the project status technically accurate.
+
 ---
 
 ## 4. Explicitly Rejected Alternatives Summary

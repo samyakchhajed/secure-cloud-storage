@@ -2,7 +2,7 @@
 
 A serverless, cloud-native file storage, management, and sharing platform built on Amazon Web Services (AWS). Engineered with a strict focus on **least-privilege IAM security**, **zero client-side cloud SDK bloat**, **browser-side AES-256-GCM plus server-side AES-256 encryption**, and **time-limited direct S3 presigned transfers**.
 
-> **Note on Project Status:** This project was developed as a real-world infrastructure trial and cloud-hardening ground to uncover AWS edge cases around OIDC claims, IAM permissions, and ephemeral CI/CD state. Cognito and CloudFront were attempted first but could not be used because the AWS account quotas for those services were zero. The deployed application therefore uses a DynamoDB-backed identity store and custom HMAC-SHA256 JWT authorizer.
+> **Project Status (November 3, 2026):** The AWS infrastructure and GitHub Actions deployment pipeline have been successfully deployed. The local mock application is functional, but live end-to-end CRUD remains unverified: the deployed frontend currently does not display the recovery key after registration, and direct S3 uploads still fail. Cognito and CloudFront were attempted first but could not be used because the AWS account quotas for those services were zero. The deployed application therefore uses a DynamoDB-backed identity store and custom HMAC-SHA256 JWT authorizer.
 
 ---
 
@@ -45,6 +45,12 @@ The system strictly decouples authorization and heavy binary transfer into two c
 - **Real-Time Quota Management:** Live tracking of user storage consumption (bytes) and file count against a 5 GB default quota, with real-time UI progress feedback.
 - **₹0 Serverless Cost Architecture:** Deployed in Mumbai (`ap-south-1`) utilizing S3 SSE-S3 default encryption (`AES256`), On-Demand DynamoDB (`PAY_PER_REQUEST`), and S3 Static Website Hosting.
 - **Keyless CI/CD Automation:** Automated cloud deployment via GitHub Actions OpenID Connect (OIDC), assuming AWS IAM roles without storing static access keys.
+
+### Verified Scope and Current Limitation
+
+- **Verified:** Terraform successfully provisions the serverless stack, GitHub Actions can deploy it using OIDC, and the local mock mode supports the intended UI flows.
+- **Not yet verified in the deployed environment:** recovery-key display, direct S3 upload/confirmation, download/decryption, quota updates, folder CRUD, and sharing CRUD.
+- **Known live issues:** a newly registered account does not currently show its recovery key, and uploads fail during the browser-to-S3 transfer. These are runtime integration issues, not evidence that the infrastructure deployment failed.
 
 ---
 
