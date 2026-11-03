@@ -12,6 +12,10 @@ class S3StorageAdapter:
     def __init__(self, bucket_name: Optional[str] = None):
         self.bucket_name = bucket_name or os.environ.get('FILES_BUCKET_NAME', '')
         self.s3_client = boto3.client('s3')
+        location = self.s3_client.get_bucket_location(Bucket=self.bucket_name).get('LocationConstraint')
+        bucket_region = location or 'us-east-1'
+        if bucket_region != self.s3_client.meta.region_name:
+            self.s3_client = boto3.client('s3', region_name=bucket_region)
 
     def generate_presigned_put_url(
         self,

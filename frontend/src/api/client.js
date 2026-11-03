@@ -134,6 +134,10 @@ export const api = {
       })
     });
 
+    if (!recoveryKey) {
+      throw new Error('Registration completed without generating a recovery key. Please try again.');
+    }
+
     return { ...res, recoveryKey };
   },
 
@@ -312,11 +316,11 @@ export const api = {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(xhr.response);
         } else {
-          reject(new Error(`S3 upload failed with status ${xhr.status}`));
+          reject(new Error(`S3 upload failed with status ${xhr.status}: ${xhr.responseText || 'No response body.'}`));
         }
       };
 
-      xhr.onerror = () => reject(new Error('Network error during direct S3 transfer.'));
+      xhr.onerror = () => reject(new Error('Network error during direct S3 transfer. Check the S3 bucket region and CORS configuration.'));
       xhr.send(encryptedBlob);
     });
 
